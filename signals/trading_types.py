@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-signals/types.py - Core data types for trading system
+signals/trading_types.py - Core data types for trading system
 """
 from dataclasses import dataclass
 from typing import List, Dict, Any

@@ -11,7 +11,7 @@ from trading.math import (
     calculate_expected_value,
     calculate_kelly_fraction
 )
-from .types import TradeMetrics, TradingRule, SimulationResult, MarketState
+from .trading_types import TradeMetrics, TradingRule, SimulationResult, MarketState
 
 def evaluate_condition(condition: Dict[str, Any], data: Dict[str, Any]) -> bool:
     """Evaluate single trading condition with error handling"""

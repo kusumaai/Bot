@@ -5,7 +5,7 @@ signals/population.py - Population management and genetic operations
 import random
 from typing import List, Dict, Any, Optional
 from utils.error_handler import handle_error
-from .types import TradingRule
+from .trading_types import TradingRule
 
 def create_baseline_rule() -> TradingRule:
     """Create baseline trading strategy using EMA crossover with RSI"""

@@ -2,23 +2,57 @@
 """
 signals/ga_synergy.py - Genetic Algorithm Trading Strategy Orchestrator
 """
+import os
+import sys
+
+# Add project root to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import asyncio
 from typing import List, Dict, Any
 from utils.error_handler import handle_error
 from database.database import DBConnection, execute_sql
-
-from .types import MarketState, TradingRule
-from .storage import store_rule, load_best_rule
-from .population import (
+from signals.trading_types import MarketState, TradingRule
+from signals.storage import store_rule, load_best_rule
+from signals.population import (
     initialize_population,
     evolve_population
 )
-from .evaluation import (
+from signals.evaluation import (
     evaluate_rule,
     simulate_rule
 )
 
-def prepare_market_state(candles: List[Dict[str, Any]]) -> MarketState:
+def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> MarketState:
+    """Create market state from candle data"""
+    try:
+        import numpy as np
+        
+        if not candles or len(candles) < 2:
+            return None
+            
+        prices = np.array([c["close"] for c in candles])
+        returns = np.log(prices[1:] / prices[:-1])
+        
+        latest = candles[-1]
+        
+        return MarketState(
+            returns=returns,
+            ar1_coef=np.corrcoef(returns[:-1], returns[1:])[0,1] if len(returns) > 1 else 0,
+            current_return=returns[-1] if len(returns) > 0 else 0,
+            volatility=np.std(returns[-20:]) if len(returns) >= 20 else 0,
+            last_price=prices[-1],
+            ema_short=latest.get("EMA_8", 0),
+            ema_long=latest.get("EMA_21", 0)
+        )
+        
+    except Exception as e:
+        handle_error(e, "ga_synergy.prepare_market_state", logger=ctx.logger)
+        return None
+    
     """Create market state from candle data"""
     try:
         import numpy as np
@@ -56,7 +90,7 @@ def generate_ga_signals(
         
     try:
         # Get market state
-        market_state = prepare_market_state(candles)
+        market_state = prepare_market_state(candles, ctx)  # Pass ctx here
         if not market_state:
             return []
             
@@ -123,7 +157,9 @@ async def run_ga_optimization(ctx: Any) -> None:
                 )
                 
                 if rows:
-                    signals = generate_ga_signals(rows, population, ctx)
+                    # Convert sqlite rows to dictionaries
+                    candles = [dict(row) for row in rows]
+                    signals = generate_ga_signals(candles, population, ctx)
                     if signals:
                         ctx.logger.info(f"Generated signals: {signals}")
                 
@@ -144,8 +180,22 @@ if __name__ == "__main__":
                 "timeframe": "1h",
                 "ga_interval": 300,
                 "exchanges": ["binance"],
-                "db_pool": "data/candles.db"
+                "ga_settings": {
+                    "population_size": 50,
+                    "mutation_rate": 0.1,
+                    "crossover_rate": 0.1,
+                    "buy_conditions_count": 3,
+                    "sell_conditions_count": 3,
+                    "available_indicators": [
+                        "close", "EMA_8", "EMA_21", "EMA_55", 
+                        "RSI_14", "MACD", "ATR_14"
+                    ]
+                },
+                "database": {
+                    "path": os.path.join(project_root, "data", "candles.db")
+                }
             }
+            self.db_pool = self.config["database"]["path"]
     
     ctx = Context()
     
