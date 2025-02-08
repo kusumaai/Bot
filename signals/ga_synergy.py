@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
 signals/ga_synergy.py - Genetic Algorithm Trading Strategy Orchestrator
+Enhanced version with optimized settings for complex strategy evolution
 """
+
 import os
 import sys
+import logging
+import asyncio
+from typing import List, Dict, Any
 
 # Add project root to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,8 +16,6 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import asyncio
-from typing import List, Dict, Any
 from utils.error_handler import handle_error
 from database.database import DBConnection, execute_sql
 from signals.trading_types import MarketState, TradingRule
@@ -27,18 +30,21 @@ from signals.evaluation import (
 )
 
 def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> MarketState:
-    """Create market state from candle data"""
+    """Create market state from candle data with enhanced metrics"""
     try:
         import numpy as np
         
         if not candles or len(candles) < 2:
+            ctx.logger.warning("Insufficient candle data for market state")
             return None
             
         prices = np.array([c["close"] for c in candles])
         returns = np.log(prices[1:] / prices[:-1])
         
+        # Get the most recent candle for current state
         latest = candles[-1]
         
+        # Calculate enhanced market state metrics
         return MarketState(
             returns=returns,
             ar1_coef=np.corrcoef(returns[:-1], returns[1:])[0,1] if len(returns) > 1 else 0,
@@ -52,70 +58,48 @@ def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> MarketState
     except Exception as e:
         handle_error(e, "ga_synergy.prepare_market_state", logger=ctx.logger)
         return None
-    
-    """Create market state from candle data"""
-    try:
-        import numpy as np
-        
-        if not candles or len(candles) < 2:
-            return None
-            
-        prices = np.array([c["close"] for c in candles])
-        returns = np.log(prices[1:] / prices[:-1])
-        
-        latest = candles[-1]
-        
-        return MarketState(
-            returns=returns,
-            ar1_coef=np.corrcoef(returns[:-1], returns[1:])[0,1] if len(returns) > 1 else 0,
-            current_return=returns[-1] if len(returns) > 0 else 0,
-            volatility=np.std(returns[-20:]) if len(returns) >= 20 else 0,
-            last_price=prices[-1],
-            ema_short=latest.get("EMA_8", 0),
-            ema_long=latest.get("EMA_21", 0)
-        )
-        
-    except Exception as e:
-        handle_error(e, "ga_synergy.prepare_market_state", logger=None)
-        return None
 
 def generate_ga_signals(
     candles: List[Dict[str, Any]],
     population: List[TradingRule],
     ctx: Any
 ) -> List[Dict[str, Any]]:
-    """Generate trading signals using genetic algorithm"""
+    """Generate trading signals using enhanced genetic algorithm"""
     if not candles or not population:
+        ctx.logger.warning("Missing candles or population for GA signal generation")
         return []
         
     try:
-        # Get market state
-        market_state = prepare_market_state(candles, ctx)  # Pass ctx here
+        # Prepare market state with enhanced metrics
+        market_state = prepare_market_state(candles, ctx)
         if not market_state:
             return []
             
-        # Evolve population
+        # Evolve population with increased complexity
+        ctx.logger.info("Evolving population...")
         evolved = evolve_population(population, ctx)
         if not evolved:
             return []
             
-        # Get best rule
+        # Get best performing rule
         best_rule = evolved[0]
         if not best_rule:
             return []
             
-        # Store if valid
-        if best_rule.fitness > 0:
+        # Store if fitness exceeds threshold
+        if best_rule.fitness > ctx.config.get("ga_settings", {}).get("min_fitness", 0):
+            ctx.logger.info(f"Storing rule with fitness: {best_rule.fitness}")
             store_rule(best_rule, ctx)
         
-        # Generate signal
+        # Generate signal from best rule
         last_candle = candles[-1]
         signal = evaluate_rule(best_rule, last_candle, market_state)
         
         if not signal:
             return []
             
-        # Simulate for parameters
+        # Run detailed simulation for signal parameters
+        ctx.logger.info("Running comprehensive simulation for signal parameters...")
         sim_result = simulate_rule(best_rule, candles, market_state, ctx)
         if not sim_result or not sim_result.trades:
             return []
@@ -141,36 +125,53 @@ def generate_ga_signals(
 async def run_ga_optimization(ctx: Any) -> None:
     """Run GA optimization process"""
     try:
+        ctx.logger.info("Initializing GA population...")
         population = initialize_population(ctx)
+        ctx.logger.info("Population initialized successfully")
+        
+        # Enhanced SQL query for richer dataset
+        sql_query = """
+            SELECT c.*, 
+                   (c.high - c.low) / c.low * 100 as candle_range_pct,
+                   (c.close - c.open) / c.open * 100 as candle_body_pct
+            FROM candles c
+            WHERE c.timeframe = ?
+            AND c.datetime >= datetime('now', '-720 day')
+            AND c.symbol IN ('BTC/USDT', 'ETH/USDT')
+            ORDER BY c.timestamp DESC
+            LIMIT 1000000
+        """
         
         while True:
+            ctx.logger.info("Fetching dataset...")
             with DBConnection(ctx.db_pool) as conn:
                 rows = execute_sql(
                     conn,
-                    """
-                    SELECT * FROM candles 
-                    WHERE timeframe = ?
-                    ORDER BY timestamp DESC
-                    LIMIT 1000
-                    """,
+                    sql_query,
                     [ctx.config.get("timeframe", "1h")]
                 )
                 
                 if rows:
-                    # Convert sqlite rows to dictionaries
+                    ctx.logger.info(f"Processing {len(rows)} candles metrics...")
                     candles = [dict(row) for row in rows]
                     signals = generate_ga_signals(candles, population, ctx)
                     if signals:
-                        ctx.logger.info(f"Generated signals: {signals}")
+                        ctx.logger.info(f"Generated signals with parameters: {signals}")
+                    else:
+                        ctx.logger.info("No signals met criteria this iteration")
+                else:
+                    ctx.logger.warning("No candle data found")
                 
-            await asyncio.sleep(ctx.config.get("ga_interval", 300))
+            # Dynamic sleep interval based on market activity
+            interval = ctx.config.get("ga_interval", 30)
+            ctx.logger.info(f"Sleeping for {interval} seconds...")
+            await asyncio.sleep(interval)
             
     except Exception as e:
         handle_error(e, "ga_synergy.run_ga_optimization", logger=ctx.logger)
 
 if __name__ == "__main__":
-    # Setup for standalone testing
-    import logging
+    # Setup for standalone testing with enhanced parameters
     logging.basicConfig(level=logging.INFO)
     
     class Context:
@@ -178,18 +179,44 @@ if __name__ == "__main__":
             self.logger = logging.getLogger("GeneticAlgorithm")
             self.config = {
                 "timeframe": "1h",
-                "ga_interval": 300,
+                "ga_interval": 30,
                 "exchanges": ["binance"],
                 "ga_settings": {
-                    "population_size": 50,
-                    "mutation_rate": 0.1,
-                    "crossover_rate": 0.1,
-                    "buy_conditions_count": 3,
-                    "sell_conditions_count": 3,
+                    # Enhanced population settings
+                    "population_size": 200,
+                    "mutation_rate": 0.25,
+                    "crossover_rate": 0.85,
+                    "elitism_ratio": 0.15,
+                    
+                    # Enhanced strategy complexity
+                    "buy_conditions_count": 6,
+                    "sell_conditions_count": 6,
+                    "min_conditions": 3,
+                    "max_conditions": 8,
+                    
+                    # Tournament selection settings
+                    "tournament_size": 8,
+                    
+                    # Minimum fitness threshold for storing rules
+                    "min_fitness": 0.1,
+                    
+                    # Comprehensive indicator set
                     "available_indicators": [
-                        "close", "EMA_8", "EMA_21", "EMA_55", 
-                        "RSI_14", "MACD", "ATR_14"
-                    ]
+                        # Price data
+                        "close", "open", "high", "low",
+                        # Moving averages
+                        "EMA_8", "EMA_21", "EMA_55", "EMA_89", "EMA_144", "EMA_233",
+                        # Momentum
+                        "RSI_14", "MACD", "MACDs",
+                        # Volatility
+                        "ATR_14", "BBL", "BBM", "BBU",
+                        # Derived values
+                        "candle_range_pct", "candle_body_pct"
+                    ],
+                    
+                    # Enhanced evolution settings
+                    "allow_nested_conditions": True,
+                    "mutation_types": ["operator", "indicator", "reference", "threshold"]
                 },
                 "database": {
                     "path": os.path.join(project_root, "data", "candles.db")
@@ -202,4 +229,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_ga_optimization(ctx))
     except KeyboardInterrupt:
-        print("\nStopping GA optimization")
+        print("\nStopping GA optimization gracefully...")
