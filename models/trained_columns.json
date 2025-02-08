@@ -1,0 +1,14 @@
+[
+  "open",
+  "high",
+  "low",
+  "close",
+  "volume",
+  "EMA_8",
+  "EMA_21",
+  "EMA_55",
+  "RSI_14",
+  "MACD",
+  "MACDs",
+  "ATR_14"
+]

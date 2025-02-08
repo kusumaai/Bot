@@ -1,0 +1,6 @@
+pandas>=1.4.0
+numpy>=1.21.0
+ccxt>=2.4.0
+pandas_ta>=0.3.14b0
+aiohttp>=3.8.1
+scikit-learn>=1.1.0
