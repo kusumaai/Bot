@@ -19,7 +19,7 @@ class DBConnection:
     def __enter__(self):
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
-        # Enable WAL and foreign_keys for better concurrency & integrity
+        # Enable WAL and foreign_keys for better concurrency 
         self.conn.execute("PRAGMA journal_mode = WAL;")
         self.conn.execute("PRAGMA foreign_keys = ON;")
         return self.conn
