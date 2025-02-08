@@ -161,15 +161,22 @@ def update_daily_performance(ctx: Any) -> None:
     except Exception as e:
         handle_error(e, context="Accounting.update_daily_performance", logger=ctx.logger)
 
-
 def log_performance_summary(ctx: Any) -> None:
+    """Log daily performance summary with better formatting"""
     try:
         with DBConnection(ctx.db_pool) as conn:
             sql = "SELECT * FROM bot_performance ORDER BY day DESC LIMIT 1"
             summary = execute_sql_one(conn, sql, [])
             if summary:
-                ctx.logger.info(f"Daily Performance: {summary}")
+                perf_str = (
+                    f"Daily Performance - "
+                    f"Real trades: {summary['real_trades_closed']}, "
+                    f"Paper trades: {summary['paper_trades_closed']}, "
+                    f"Real PnL: {summary['real_pnl']:.2f}, "
+                    f"Paper PnL: {summary['paper_pnl']:.2f}"
+                )
+                ctx.logger.info(perf_str)
             else:
-                ctx.logger.info("No performance data available yet.")
+                ctx.logger.info("No performance data available yet")
     except Exception as e:
         handle_error(e, context="Accounting.log_performance_summary", logger=ctx.logger)

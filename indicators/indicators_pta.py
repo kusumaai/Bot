@@ -11,6 +11,106 @@ from utils.error_handler import handle_error
 def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
     """
     Compute technical indicators for the provided candlestick data.
+    Now with better handling of long-period indicators.
+    
+    Args:
+        candles (list): Each element is [timestamp, open, high, low, close, volume, (optional)ATR_14].
+        ctx (object): Context with config and logger.
+    
+    Returns:
+        pd.DataFrame: DataFrame with original columns plus new indicator columns.
+    """
+    try:
+        # Drop extra ATR column if present
+        if candles and len(candles[0]) == 7:
+            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "ATR_14"])
+            df.drop(columns=["ATR_14"], inplace=True)
+        else:
+            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+        # Get indicator settings
+        ind_cfg = ctx.config.get("indicators", {})
+        ema_periods = ind_cfg.get("ema_periods", [8, 21, 55])  # Remove 233 from default
+        rsi_period = ind_cfg.get("rsi_period", 14)
+        macd_slow = ind_cfg.get("macd_slow", 26)
+        macd_fast = ind_cfg.get("macd_fast", 12)
+        macd_signal = ind_cfg.get("macd_signal", 9)
+        atr_period = ind_cfg.get("atr_period", 14)
+        bb_length = ind_cfg.get("bb_length", 20)
+        bb_std = ind_cfg.get("bb_std", 2)
+
+        # Convert timestamp and sort
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True, errors="coerce")
+        df.sort_values("datetime", inplace=True)
+        df.reset_index(drop=True, inplace=True)
+
+        # Calculate indicators only if we have enough data
+        data_length = len(df)
+        
+        # EMAs
+        for period in ema_periods:
+            if data_length >= period:
+                df[f"EMA_{period}"] = ta.ema(df["close"], length=period)
+            else:
+                ctx.logger.debug(f"Insufficient data for EMA_{period} calculation")
+                df[f"EMA_{period}"] = pd.Series([None] * len(df))
+
+        # Add long-term EMAs only if we have enough data
+        long_emas = [89, 144, 233]  # Additional longer periods
+        for period in long_emas:
+            if data_length >= period:
+                df[f"EMA_{period}"] = ta.ema(df["close"], length=period)
+            else:
+                df[f"EMA_{period}"] = pd.Series([None] * len(df))
+
+        # RSI
+        if data_length >= rsi_period:
+            df[f"RSI_{rsi_period}"] = ta.rsi(df["close"], length=rsi_period)
+        else:
+            df[f"RSI_{rsi_period}"] = pd.Series([None] * len(df))
+
+        # MACD
+        if data_length >= macd_slow:
+            macd_df = ta.macd(df["close"], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+            if macd_df is not None and not macd_df.empty:
+                df["MACD"] = macd_df[f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"]
+                df["MACDs"] = macd_df[f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"]
+            else:
+                df["MACD"] = pd.Series([None] * len(df))
+                df["MACDs"] = pd.Series([None] * len(df))
+        else:
+            df["MACD"] = pd.Series([None] * len(df))
+            df["MACDs"] = pd.Series([None] * len(df))
+
+        # ATR
+        if data_length >= atr_period:
+            df[f"ATR_{atr_period}"] = ta.atr(df["high"], df["low"], df["close"], length=atr_period)
+        else:
+            df[f"ATR_{atr_period}"] = pd.Series([None] * len(df))
+
+        # Bollinger Bands
+        if data_length >= bb_length:
+            bb = ta.bbands(df["close"], length=bb_length, std=bb_std)
+            if bb is not None and not bb.empty:
+                df["BBL"] = bb[f"BBL_{bb_length}_{float(bb_std)}"]
+                df["BBM"] = bb[f"BBM_{bb_length}_{float(bb_std)}"]
+                df["BBU"] = bb[f"BBU_{bb_length}_{float(bb_std)}"]
+            else:
+                df["BBL"] = pd.Series([None] * len(df))
+                df["BBM"] = pd.Series([None] * len(df))
+                df["BBU"] = pd.Series([None] * len(df))
+        else:
+            df["BBL"] = pd.Series([None] * len(df))
+            df["BBM"] = pd.Series([None] * len(df))
+            df["BBU"] = pd.Series([None] * len(df))
+
+        return df
+
+    except Exception as e:
+        handle_error(e, context="Indicators.compute_indicators", logger=ctx.logger)
+        return pd.DataFrame()
+    """
+    Compute technical indicators for the provided candlestick data.
     If there are 7 columns, assumes the 7th is an existing ATR_14 to drop.
     
     Args:
