@@ -21,13 +21,14 @@ if project_root not in sys.path:
 
 import pandas as pd
 
-# Import modular components
-from execution.market_data import load_market_data
+# Import core components
+from execution.market_data import MarketData
 from execution.position_manager import calculate_position_params, should_close_position
 from execution.exchange_interface import create_exchange, fetch_ticker, place_order, close_position
+from trading.ratchet import RatchetManager
 
 # Import signal components
-from models.ml_signal import generate_ml_signals as _generate_ml_signals
+from models.ml_signal import generate_ml_signals
 from signals.ga_synergy import generate_ga_signals
 from signals.population import initialize_population
 from signals.signal_utils import combine_signals, validate_signal
@@ -53,11 +54,13 @@ class TradingContext:
     db_pool: str = ""
     rf_model: Any = None
     xgb_model: Any = None
+    ratchet_manager: Any = None
+    market_data: Any = None
 
 def load_config() -> dict:
     """Load configuration file"""
     config_path = os.path.join(project_root, "config", "config.json")
-    if not os.path.isfile(config_path):
+    if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path, "r") as f:
         return json.load(f)
@@ -72,16 +75,6 @@ def safe_load_ml_models(ctx: TradingContext) -> None:
             ctx.logger.info("ML models loaded successfully")
     except Exception as e:
         handle_error(e, "Bot.safe_load_ml_models", logger=ctx.logger)
-
-def generate_ml_signals(features_df: pd.DataFrame, ctx: TradingContext) -> list:
-    """Generate ML signals if models exist"""
-    if not (ctx.rf_model or ctx.xgb_model):
-        return []
-    try:
-        return _generate_ml_signals(features_df, ctx)
-    except Exception as e:
-        handle_error(e, "Bot.generate_ml_signals", logger=ctx.logger)
-        return []
 
 async def process_signals(
     signals: List[Dict[str, Any]],
@@ -119,6 +112,12 @@ async def process_signals(
             )
             
             if order:
+                # Initialize ratchet tracking for new trade
+                ctx.ratchet_manager.initialize_trade(
+                    order["id"],
+                    signal["entry_price"]
+                )
+                
                 record_new_trade(
                     order,
                     signal,
@@ -128,6 +127,8 @@ async def process_signals(
                     ctx,
                     trade_source="paper" if ctx.config.get("paper_mode", False) else "real"
                 )
+                
+                ctx.logger.info(f"New trade opened: {order['id']} - {signal['symbol']}")
         
         except Exception as e:
             handle_error(e, "Bot.process_signals", logger=ctx.logger)
@@ -147,20 +148,27 @@ async def manage_positions(
             if current_price <= 0:
                 continue
             
+            # Update ratchet system and check for close conditions
             if should_close_position(
                 trade,
                 current_price,
                 market_data[trade["symbol"]],
                 ctx
             ):
-                # Close position
                 if await close_position(trade, ctx):
                     pnl = (
                         (current_price - trade["entry_price"]) * trade["position_size"]
                         if trade["direction"] == "long"
                         else (trade["entry_price"] - current_price) * trade["position_size"]
                     )
+                    
+                    # Clean up ratchet tracking
+                    ctx.ratchet_manager.remove_trade(trade["id"])
                     update_trade_result(trade["id"], pnl, ctx)
+                    
+                    ctx.logger.info(
+                        f"Closed trade {trade['id']} with PNL: {pnl:.2f}"
+                    )
     
     except Exception as e:
         handle_error(e, "Bot.manage_positions", logger=ctx.logger)
@@ -177,9 +185,8 @@ async def main_loop(ctx: TradingContext) -> None:
             start_time = time.time()
             
             # Load market data
-            market_data, dataframes = await load_market_data(
-                ctx.config["market_list"],
-                ctx
+            market_data, dataframes = await ctx.market_data.load_market_data(
+                ctx.config["market_list"]
             )
             
             # Generate signals
@@ -241,6 +248,9 @@ async def initialize_and_run() -> None:
     
     # Initialize components
     ctx.db_pool = ctx.config.get("database", {}).get("path", "data/candles.db")
+    ctx.ratchet_manager = RatchetManager(ctx)
+    ctx.market_data = MarketData(ctx)
+    
     safe_load_ml_models(ctx)
     ctx.exchange = await create_exchange(ctx)
     

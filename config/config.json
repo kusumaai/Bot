@@ -4,51 +4,58 @@
     "BTC/USDT",
     "ETH/USDT"
   ],
-
   "timeframe": "15m",
   "timeframe_minutes": 15,
   "execution_interval": 5,
+  
 
   "ml_long_threshold": 0.7,
   "ml_short_threshold": 0.3,
-
   "missing_threshold": 0.1,
-
+  
+ 
   "ratchet_thresholds": [2, 4, 6],
   "ratchet_lock_ins": [1, 2, 3],
-
   "kelly_scaling": 1.0,
   "kelly_max_fraction": 1.0,
-
   "min_position_size": 0.01,
+  "emergency_stop_pct": -3,
+  "max_hold_hours": 8,
+  
 
   "fee_rate": 0.001,
   "slippage_rate": 0.002,
-  "emergency_stop_pct": -3,
-  "max_hold_hours": 8,
+  
 
-  "ga_pop_size": 50,
-  "ga_mutation_rate": 0.1,
-  "ga_crossover": true,
-  "ga_crossover_rate": 0.1,
-  "ga_buy_conds_count": 3,
-  "ga_sell_conds_count": 3,
-  "allow_short_in_ga": true,
-  "ga_chunk_size": 10000,
-  "ga_trailing_distance": 50.0,
-  "ga_max_exposure_ratio": 0.9,
+  "ga_settings": {
+    "population_size": 50,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.1,
+    "buy_conditions_count": 3,
+    "sell_conditions_count": 3,
+    "chunk_size": 10000,
+    "trailing_distance": 50.0,
+    "max_exposure_ratio": 0.9,
+    "allow_shorts": true
+  },
+  
 
   "auto_new_trades": true,
-
   "exchanges": [
     "kucoin",
     "bybit"
   ],
+  "exchange_settings": {
+    "timeout": 30000,
+    "enableRateLimit": true
+  },
+  
 
   "database": {
     "type": "sqlite",
     "path": "data/candles.db"
   },
+  
 
   "min_trade_sizes": {
     "BTC/USDT": {
@@ -59,5 +66,32 @@
       "min_notional": 2,
       "min_qty": 0.001
     }
+  },
+  
+
+  "indicators": {
+    "ema_periods": [8, 21, 55, 233],
+    "rsi_period": 14,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "atr_period": 14,
+    "bb_length": 20,
+    "bb_std": 2
+  },
+  
+  "model_paths": {
+    "rf_model": "models/trained_rf.pkl",
+    "trained_columns": "models/trained_columns.json"
+  },
+  
+  "log_settings": {
+    "level": "INFO",
+    "output": "logs/trading_bot.log"
+  },
+  
+  "retry_settings": {
+    "max_retries": 3,
+    "delay": 2
   }
 }
