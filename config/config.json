@@ -13,7 +13,6 @@
   "ml_short_threshold": 0.3,
   "missing_threshold": 0.1,
   
- 
   "ratchet_thresholds": [2, 4, 6],
   "ratchet_lock_ins": [1, 2, 3],
   "kelly_scaling": 0.5,
@@ -28,15 +27,17 @@
   
 
   "ga_settings": {
-    "population_size": 50,
-    "mutation_rate": 0.1,
-    "crossover_rate": 0.1,
+  "ga_settings": {
+    "population_size": 100,        
+    "mutation_rate": 0.2,         
+    "crossover_rate": 0.8,         
     "buy_conditions_count": 3,
     "sell_conditions_count": 3,
+    "min_fitness": 0.05,          
     "chunk_size": 10000,
     "trailing_distance": 50.0,
     "max_exposure_ratio": 0.9,
-    "allow_shorts": true
+    "allow_shorts": false
   },
   
 
@@ -91,7 +92,7 @@
   },
   
   "retry_settings": {
-    "max_retries": 3,
-    "delay": 2
+    "max_retries": 5,
+    "delay": 2}
   }
 }

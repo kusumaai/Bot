@@ -3,6 +3,7 @@
 signals/evaluation.py - Strategy evaluation and metrics calculation
 """
 import numpy as np
+import logging
 from typing import Dict, Any, List, Optional
 from utils.error_handler import handle_error
 from trading.math import (
@@ -49,6 +50,45 @@ def evaluate_condition(condition: Dict[str, Any], data: Dict[str, Any]) -> bool:
         return False
 
 def evaluate_rule(rule: TradingRule, data: Dict[str, Any], market_state: MarketState) -> str:
+    """Evaluate trading rule and return signal direction"""
+    try:
+        if not rule or not data or not market_state:
+            return ""
+            
+        # Check buy conditions
+        buy_signal = all(
+            evaluate_condition(cond, data)
+            for cond in rule.buy_conditions
+        )
+        
+        # Check sell conditions
+        sell_signal = all(
+            evaluate_condition(cond, data)
+            for cond in rule.sell_conditions
+        )
+        
+        if not (buy_signal or sell_signal):
+            return ""
+            
+        # Validate with prediction
+        predicted_return = predict_next_return(
+            market_state.current_return,
+            market_state.ar1_coef
+        )
+        
+        if buy_signal and predicted_return > 0:
+            return "long"
+        elif sell_signal and predicted_return < 0:
+            return "short"
+            
+        return ""
+        
+    except Exception as e:
+        # Get logger from context if available
+        logger = logging.getLogger("TradingBot")
+        handle_error(e, "evaluation.evaluate_rule", logger=logger)
+        return ""
+    
     """Evaluate trading rule and return signal direction"""
     try:
         if not rule or not data or not market_state:

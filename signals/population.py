@@ -1,37 +1,56 @@
-#!/usr/bin/env python3
-"""
-signals/population.py - Population management and genetic operations
-"""
+# File: signals/population.py
 import random
 from typing import List, Dict, Any, Optional
 from utils.error_handler import handle_error
 from .trading_types import TradingRule
 
 def create_baseline_rule() -> TradingRule:
-    """Create baseline trading strategy using EMA crossover with RSI"""
+    """Create baseline trading strategy using standard technical conditions"""
     return TradingRule(
         buy_conditions=[
+            # EMA Crossover
             {
                 "indicator": "EMA_8",
                 "op": ">",
                 "ref": "EMA_21"
             },
+            # RSI not overbought
             {
                 "indicator": "RSI_14",
+                "op": "<",
+                "ref": 70
+            },
+            # Trend confirmation
+            {
+                "indicator": "EMA_21",
                 "op": ">",
-                "ref": 40
+                "ref": "EMA_55"
+            },
+            # Volatility check
+            {
+                "indicator": "ATR_14",
+                "op": ">",
+                "ref": 0
             }
         ],
         sell_conditions=[
+            # EMA Crossover reversed
             {
                 "indicator": "EMA_8",
                 "op": "<",
                 "ref": "EMA_21"
             },
+            # RSI not oversold
             {
                 "indicator": "RSI_14",
+                "op": ">",
+                "ref": 30
+            },
+            # Trend reversal
+            {
+                "indicator": "EMA_21",
                 "op": "<",
-                "ref": 60
+                "ref": "EMA_55"
             }
         ]
     )
@@ -39,9 +58,13 @@ def create_baseline_rule() -> TradingRule:
 def generate_random_rule(indicators: List[str], ctx: Any) -> Optional[TradingRule]:
     """Generate random trading strategy"""
     try:
-        config = ctx.config.get("ga_settings", {})
-        buy_n = config.get("buy_conditions_count", 3)
-        sell_n = config.get("sell_conditions_count", 3)
+        # Get GA settings from config
+        ga_settings = ctx.config.get("ga_settings", {})
+        if isinstance(ga_settings, dict) and "ga_settings" in ga_settings:
+            ga_settings = ga_settings["ga_settings"]
+            
+        buy_n = ga_settings.get("buy_conditions_count", 3)
+        sell_n = ga_settings.get("sell_conditions_count", 3)
         
         if buy_n < 1 or sell_n < 1:
             return None
@@ -91,11 +114,20 @@ def generate_random_rule(indicators: List[str], ctx: Any) -> Optional[TradingRul
 
 def initialize_population(ctx: Any) -> List[TradingRule]:
     """Initialize population with baseline and random rules"""
-    config = ctx.config.get("ga_settings", {})
-    population_size = config.get("population_size", 50)
+    # Get GA settings from config
+    ga_settings = ctx.config.get("ga_settings", {})
+    if isinstance(ga_settings, dict) and "ga_settings" in ga_settings:
+        ga_settings = ga_settings["ga_settings"]
+        
+    population_size = ga_settings.get("population_size", 100)
     
-    indicators = config.get("available_indicators", [
-        "close", "EMA_8", "EMA_21", "EMA_55", "RSI_14", "MACD", "ATR_14"
+    # Get available indicators with defaults matching config.json
+    indicators = ga_settings.get("available_indicators", [
+        "close", "open", "high", "low",
+        "EMA_8", "EMA_21", "EMA_55", "EMA_89", "EMA_144", "EMA_233",
+        "RSI_14", "MACD", "MACDs",
+        "ATR_14", "BBL", "BBM", "BBU",
+        "candle_range_pct", "candle_body_pct"
     ])
     
     # Start with baseline
@@ -107,6 +139,7 @@ def initialize_population(ctx: Any) -> List[TradingRule]:
         if rule:
             population.append(rule)
     
+    ctx.logger.info(f"Initialized population with {len(population)} members using settings: {ga_settings}")
     return population
 
 def tournament_select(population: List[TradingRule], tournament_size: int = 3) -> TradingRule:
@@ -139,6 +172,9 @@ def mutate(rule: TradingRule, indicators: List[str], ctx: Any) -> TradingRule:
         return create_baseline_rule()
         
     config = ctx.config.get("ga_settings", {})
+    if isinstance(config, dict) and "ga_settings" in config:
+        config = config["ga_settings"]
+        
     mutation_rate = config.get("mutation_rate", 0.1)
     operators = [">", ">=", "<", "<="]
     
@@ -173,6 +209,9 @@ def evolve_population(
         return [create_baseline_rule()]
     
     config = ctx.config.get("ga_settings", {})
+    if isinstance(config, dict) and "ga_settings" in config:
+        config = config["ga_settings"]
+        
     population_size = len(population)
     elitism_count = int(population_size * config.get("elitism_ratio", 0.1))
     crossover_rate = config.get("crossover_rate", 0.7)

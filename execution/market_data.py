@@ -73,9 +73,7 @@ class MarketData:
         returns = calculate_log_returns(prices)
         
         # Get market state
-        market_state = prepare_market_state(
-            candles_df.to_dict("records")
-        )
+        market_state = prepare_market_state(candles_df.to_dict("records"), self.ctx)
 
         # Current metrics
         current_price = prices[-1]
@@ -169,37 +167,45 @@ class MarketData:
         return tradable
 
 if __name__ == "__main__":
-    # Example usage
     import asyncio
     import logging
-    
+    import json
+    import os
+    from dataclasses import dataclass
+
+    # Setup logging
     logging.basicConfig(level=logging.INFO)
-    
-    class DummyContext:
-        def __init__(self):
-            self.logger = logging.getLogger()
-            self.config = {
-                "timeframe": "15m",
-                "market_list": ["BTC/USDT", "ETH/USDT"],
-                "min_trade_value": 10.0,
-                "min_trade_sizes": {
-                    "BTC/USDT": {
-                        "min_qty": 0.0001,
-                        "min_notional": 10.0
-                    },
-                    "ETH/USDT": {
-                        "min_qty": 0.001,
-                        "min_notional": 10.0
-                    }
-                }
-            }
-            self.db_pool = "data/candles.db"
-    
+    logger = logging.getLogger()
+
+    # Load config.json
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    config_path = os.path.join(project_root, "config", "config.json")
+
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load config.json: {e}")
+        config = {}
+
+    @dataclass
+    class Context:
+        logger: logging.Logger
+        config: dict
+        db_pool: str
+
+    # Create context with actual config
+    ctx = Context(
+        logger=logger,
+        config=config,
+        db_pool=os.path.join(project_root, "data", "candles.db")
+    )
+
     async def main():
-        ctx = DummyContext()
         market_data = MarketData(ctx)
         
-        data, dfs = await market_data.load_market_data(["BTC/USDT"])
+        data, dfs = await market_data.load_market_data(ctx.config.get("market_list", ["BTC/USDT"]))
         
         if data:
             for symbol, info in data.items():
@@ -210,5 +216,5 @@ if __name__ == "__main__":
         
         tradable = market_data.get_tradable_symbols(100.0)  # with 100 USDT
         print("\nTradable symbols with 100 USDT:", tradable)
-    
+
     asyncio.run(main())
