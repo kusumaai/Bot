@@ -5,6 +5,51 @@ from utils.error_handler import handle_error
 from .trading_types import TradingRule
 
 def create_baseline_rule() -> TradingRule:
+    """Create baseline strategy using EMA crosses and stochastic confirmation"""
+    return TradingRule(
+        buy_conditions=[
+            # Primary signal: EMA8 crosses above EMA55
+            {
+                "indicator": "EMA_8",
+                "op": ">",
+                "ref": "EMA_55"
+            },
+            # Trend confirmation: EMA21 above EMA233
+            {
+                "indicator": "EMA_21",
+                "op": ">",
+                "ref": "EMA_233"
+            },
+            # Stochastic momentum confirmation 
+            {
+                "indicator": "RSI_14",  # We'll update this to stochastic once added
+                "op": "<",
+                "ref": 60  # Approximating stochastic for now
+            }
+        ],
+        sell_conditions=[
+            # Primary signal: EMA8 crosses below EMA55
+            {
+                "indicator": "EMA_8",
+                "op": "<",
+                "ref": "EMA_55"
+            },
+            # Trend confirmation: EMA21 below EMA233
+            {
+                "indicator": "EMA_21",
+                "op": "<",
+                "ref": "EMA_233"
+            },
+            # Stochastic momentum confirmation
+            {
+                "indicator": "RSI_14",  # Will update to stochastic
+                "op": ">",
+                "ref": 40
+            }
+        ]
+    )
+    
+    
     """Create baseline trading strategy using standard technical conditions"""
     return TradingRule(
         buy_conditions=[

@@ -30,6 +30,7 @@ class MarketState:
     last_price: float
     ema_short: float
     ema_long: float
+    ctx: any 
 
 @dataclass
 class TradingRule:
