@@ -25,8 +25,6 @@
   "fee_rate": 0.001,
   "slippage_rate": 0.002,
   
-
-  "ga_settings": {
   "ga_settings": {
     "population_size": 100,        
     "mutation_rate": 0.2,         
@@ -94,5 +92,5 @@
   "retry_settings": {
     "max_retries": 5,
     "delay": 2}
-  }
+  
 }

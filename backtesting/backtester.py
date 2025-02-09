@@ -68,7 +68,7 @@ class Backtester:
                 params_ins = [
                     trade["id"],
                     trade["symbol"],
-                    ctx.config["timeframe"],
+                    ctx.config.get("timeframe", "15m"),  # Default to 15m if not specified
                     "backtest",  # Mark source as backtest
                     trade["direction"],
                     trade["entry_price"],
@@ -85,7 +85,7 @@ class Backtester:
                 
         except Exception as e:
             handle_error(e, context="Backtester.record_backtest_trade", logger=ctx.logger)
-
+            
     def prepare_market_state(self, data: pd.DataFrame) -> Any:
         """Prepare market state for signal generation"""
         from signals.trading_types import MarketState
@@ -172,11 +172,11 @@ class Backtester:
         return results
 
     def _calculate_position_size(
-        self,
-        balance: float,
-        signal: Dict[str, Any],
-        price: float
-    ) -> float:
+            self,
+            balance: float,
+            signal: Dict[str, Any],
+            price: float
+        ) -> float:
         """Calculate position size using Kelly criterion and volatility scaling"""
         from trading.math import (
             calculate_kelly_fraction,
@@ -200,13 +200,13 @@ class Backtester:
         )
 
     def _execute_trade(
-        self,
-        signal: Dict[str, Any],
-        position_size: float,
-        entry_candle: pd.Series,
-        future_data: pd.DataFrame,
-        market_state: Dict[str, Any]
-    ) -> Dict[str, Any]:
+            self,
+            signal: Dict[str, Any],
+            position_size: float,
+            entry_candle: pd.Series,
+            future_data: pd.DataFrame,
+            market_state: Dict[str, Any]
+        ) -> Dict[str, Any]:
         """Execute trade and track results with database recording"""
         entry_price = entry_candle["close"]
         entry_cost = position_size * entry_price * self.commission
@@ -257,15 +257,15 @@ class Backtester:
         return None
 
     def _close_trade(
-        self,
-        signal: Dict[str, Any],
-        position_size: float,
-        entry_price: float,
-        exit_price: float,
-        entry_cost: float,
-        exit_time: str,
-        entry_time: str
-    ) -> Dict[str, Any]:
+            self,
+            signal: Dict[str, Any],
+            position_size: float,
+            entry_price: float,
+            exit_price: float,
+            entry_cost: float,
+            exit_time: str,
+            entry_time: str
+        ) -> Dict[str, Any]:
         """Calculate trade result and format for database"""
         exit_cost = position_size * exit_price * self.commission
         total_cost = entry_cost + exit_cost
@@ -293,10 +293,10 @@ class Backtester:
         }
 
     def _calculate_metrics(
-        self,
-        trades: List[Dict[str, Any]], 
-        equity_curve: pd.Series
-    ) -> BacktestResults:
+            self,
+            trades: List[Dict[str, Any]], 
+            equity_curve: pd.Series
+        ) -> BacktestResults:
         """Calculate comprehensive backtest metrics"""
         if not trades:
             return BacktestResults(
