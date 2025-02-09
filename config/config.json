@@ -15,14 +15,14 @@
   
   "ratchet_thresholds": [2, 4, 6],
   "ratchet_lock_ins": [1, 2, 3],
-  "kelly_scaling": 0.5,
-  "kelly_max_fraction": 0.3,
+  "kelly_scaling": 0.3,
+  "kelly_max_fraction": 0.2,
   "min_position_size": 0.01,
   "emergency_stop_pct": -3,
-  "max_hold_hours": 21,
+  "max_hold_hours": 12,
   
 
-  "fee_rate": 0.004,
+  "fee_rate": 0.005,
   "slippage_rate": 0.002,
   
   "ga_settings": {

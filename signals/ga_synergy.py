@@ -53,7 +53,8 @@ def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> MarketState
             volatility=np.std(returns[-20:]) if len(returns) >= 20 else 0,
             last_price=prices[-1],
             ema_short=latest.get("EMA_8", 0),
-            ema_long=latest.get("EMA_21", 0)
+            ema_long=latest.get("EMA_21", 0),
+            ctx = Any 
         )
         
         ctx.logger.debug(f"Market state prepared: volatility={market_state.volatility:.4f}, " 
