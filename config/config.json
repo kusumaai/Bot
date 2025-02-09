@@ -1,60 +1,49 @@
 {
   "paper_mode": true,
-  "market_list": [
-    "BTC/USDT",
-    "ETH/USDT"
-  ],
+  "market_list": ["BTC/USDT", "ETH/USDT"],
   "timeframe": "15m",
   "timeframe_minutes": 15,
   "execution_interval": 5,
-  
 
-  "ml_long_threshold": 0.7,
+  "ml_long_threshold": 0.75,
   "ml_short_threshold": 0.3,
   "missing_threshold": 0.1,
-  
-  "ratchet_thresholds": [2, 4, 6],
-  "ratchet_lock_ins": [1, 2, 3],
-  "kelly_scaling": 0.3,
-  "kelly_max_fraction": 0.2,
-  "min_position_size": 0.01,
-  "emergency_stop_pct": -3,
-  "max_hold_hours": 12,
-  
 
-  "fee_rate": 0.005,
+  "ratchet_thresholds": [1.5, 3, 4.5],
+  "ratchet_lock_ins": [0.5, 1, 1.5],
+  "kelly_scaling": 0.2,
+  "kelly_max_fraction": 0.1,
+  "min_position_size": 0.01,
+  "emergency_stop_pct": -2,
+  "max_hold_hours": 8,
+
+  "commission_rate": 0.005,
   "slippage_rate": 0.002,
-  
+
   "ga_settings": {
-    "population_size": 100,        
-    "mutation_rate": 0.2,         
-    "crossover_rate": 0.8,         
+    "population_size": 150,        
+    "mutation_rate": 0.25,         
+    "crossover_rate": 0.75,         
     "buy_conditions_count": 3,
     "sell_conditions_count": 3,
     "min_fitness": 0.05,          
-    "chunk_size": 10000,
-    "trailing_distance": 25.0,
-    "max_exposure_ratio": 0.7,
+    "chunk_size": 50000,
+    "trailing_distance": 20.0,
+    "max_exposure_ratio": 0.6,
     "allow_shorts": false
   },
-  
 
   "auto_new_trades": true,
-  "exchanges": [
-    "kucoin",
-    "bybit"
-  ],
+  "exchanges": ["kucoin", "bybit"],
   "exchange_settings": {
     "timeout": 30000,
     "enableRateLimit": true
   },
-  
 
   "database": {
     "type": "sqlite",
     "path": "data/candles.db"
   },
-  
 
   "min_trade_sizes": {
     "BTC/USDT": {
@@ -66,7 +55,6 @@
       "min_qty": 0.001
     }
   },
-  
 
   "indicators": {
     "ema_periods": [8, 21, 55, 233],
@@ -81,19 +69,21 @@
     "stoch_d": 3,
     "stoch_smooth": 3
   },
-  
+
   "model_paths": {
     "rf_model": "models/trained_rf.pkl",
     "trained_columns": "models/trained_columns.json"
   },
-  
+
   "log_settings": {
     "level": "INFO",
     "output": "logs/trading_bot.log"
   },
-  
+
   "retry_settings": {
     "max_retries": 5,
-    "delay": 2}
+    "delay": 2
+  },
   
+  "risk_factor": 0.02
 }
