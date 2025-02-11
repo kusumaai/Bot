@@ -10,8 +10,9 @@ import json
 import os
 import logging
 import sys
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+import pandas as pd
 
 # Add project root to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,21 +20,19 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import pandas as pd
-
-# Import core components
+# Core components
 from execution.market_data import MarketData
 from execution.position_manager import calculate_position_params, should_close_position
 from execution.exchange_interface import create_exchange, fetch_ticker, place_order, close_position
 from trading.ratchet import RatchetManager
 
-# Import signal components
-from models.ml_signal import generate_ml_signals
+# Signal components
+from models.ml_signal import generate_ml_signals, load_models
 from signals.ga_synergy import generate_ga_signals
 from signals.population import initialize_population
 from signals.signal_utils import combine_signals, validate_signal
 
-# Import accounting components
+# Accounting components
 from accounting.accounting import (
     validate_account,
     record_new_trade,
@@ -50,12 +49,12 @@ class TradingContext:
     """Trading context container"""
     logger: logging.Logger
     config: Dict[str, Any]
-    exchange: Any = None
-    db_pool: str = ""
-    rf_model: Any = None
-    xgb_model: Any = None
-    ratchet_manager: Any = None
-    market_data: Any = None
+    db_pool: str
+    exchange: Optional[Any] = None
+    rf_model: Optional[Any] = None
+    xgb_model: Optional[Any] = None
+    ratchet_manager: Optional[Any] = None
+    market_data: Optional[Any] = None
 
 def load_config() -> dict:
     """Load configuration file"""
@@ -68,7 +67,6 @@ def load_config() -> dict:
 def safe_load_ml_models(ctx: TradingContext) -> None:
     """Load ML models safely"""
     try:
-        from models.ml_signal import load_models
         rf_model, xgb_model, _ = load_models(ctx)
         ctx.rf_model, ctx.xgb_model = rf_model, xgb_model
         if rf_model or xgb_model:
@@ -88,19 +86,17 @@ async def process_signals(
             
         try:
             if not validate_account(signal, ctx):
+                ctx.logger.debug(f"Account validation failed for {signal['symbol']}")
                 continue
                 
             current_price = await fetch_ticker(signal["symbol"], ctx)
             if current_price <= 0:
+                ctx.logger.warning(f"Invalid price for {signal['symbol']}: {current_price}")
                 continue
             
-            params = calculate_position_params(
-                signal,
-                market_data[signal["symbol"]],
-                ctx
-            )
-            
+            params = calculate_position_params(signal, market_data[signal["symbol"]], ctx)
             if params["position_size"] <= 0:
+                ctx.logger.debug(f"Invalid position size for {signal['symbol']}")
                 continue
             
             order = await place_order(
@@ -112,12 +108,10 @@ async def process_signals(
             )
             
             if order:
-                # Initialize ratchet tracking for new trade
-                ctx.ratchet_manager.initialize_trade(
-                    order["id"],
-                    signal["entry_price"]
-                )
+                # Initialize ratchet tracking
+                ctx.ratchet_manager.initialize_trade(order["id"], signal["entry_price"])
                 
+                # Record the trade
                 record_new_trade(
                     order,
                     signal,
@@ -125,13 +119,16 @@ async def process_signals(
                     params["kelly_fraction"],
                     params["position_size"],
                     ctx,
-                    trade_source="paper" if ctx.config.get("paper_mode", False) else "real"
+                    "paper" if ctx.config.get("paper_mode", False) else "real"
                 )
                 
-                ctx.logger.info(f"New trade opened: {order['id']} - {signal['symbol']}")
+                ctx.logger.info(
+                    f"New trade opened: {order['id']} - {signal['symbol']} "
+                    f"Direction: {signal['direction']} Size: {params['position_size']:.4f}"
+                )
         
         except Exception as e:
-            handle_error(e, "Bot.process_signals", logger=ctx.logger)
+            handle_error(e, f"Bot.process_signals for {signal.get('symbol', 'unknown')}", logger=ctx.logger)
 
 async def manage_positions(
     market_data: Dict[str, Dict[str, Any]],
@@ -148,30 +145,27 @@ async def manage_positions(
             if current_price <= 0:
                 continue
             
-            # Update ratchet system and check for close conditions
-            if should_close_position(
-                trade,
-                current_price,
-                market_data[trade["symbol"]],
-                ctx
-            ):
+            if should_close_position(trade, current_price, market_data[trade["symbol"]], ctx):
                 if await close_position(trade, ctx):
-                    pnl = (
-                        (current_price - trade["entry_price"]) * trade["position_size"]
-                        if trade["direction"] == "long"
-                        else (trade["entry_price"] - current_price) * trade["position_size"]
-                    )
+                    pnl = calculate_pnl(trade, current_price)
                     
-                    # Clean up ratchet tracking
+                    # Clean up trade
                     ctx.ratchet_manager.remove_trade(trade["id"])
                     update_trade_result(trade["id"], pnl, ctx)
                     
                     ctx.logger.info(
-                        f"Closed trade {trade['id']} with PNL: {pnl:.2f}"
+                        f"Closed trade {trade['id']} ({trade['symbol']}) "
+                        f"PNL: {pnl:.2f} Direction: {trade['direction']}"
                     )
     
     except Exception as e:
         handle_error(e, "Bot.manage_positions", logger=ctx.logger)
+
+def calculate_pnl(trade: Dict[str, Any], current_price: float) -> float:
+    """Calculate PnL for a trade"""
+    multiplier = 1 if trade["direction"] == "long" else -1
+    price_diff = current_price - trade["entry_price"]
+    return multiplier * price_diff * trade["position_size"]
 
 async def main_loop(ctx: TradingContext) -> None:
     """Main trading loop"""
@@ -190,8 +184,7 @@ async def main_loop(ctx: TradingContext) -> None:
             )
             
             # Generate signals
-            ml_signals = []
-            ga_signals = []
+            ml_signals, ga_signals = [], []
             
             if dataframes:
                 # ML signals from combined features
@@ -202,21 +195,22 @@ async def main_loop(ctx: TradingContext) -> None:
                 # GA signals per symbol
                 for symbol, data in market_data.items():
                     if data and "market_state" in data:
-                        signals = generate_ga_signals(
+                        symbol_signals = generate_ga_signals(
                             data["candles"],
                             population,
                             ctx
                         )
-                        ga_signals.extend(signals)
+                        ga_signals.extend(symbol_signals)
             
             # Combine and validate signals
             final_signals = combine_signals(ml_signals, ga_signals, ctx)
             valid_signals = [sig for sig in final_signals if validate_signal(sig, ctx)]
             
-            # Process valid signals
-            await process_signals(valid_signals, market_data, ctx)
+            if valid_signals:
+                ctx.logger.info(f"Processing {len(valid_signals)} valid signals")
+                await process_signals(valid_signals, market_data, ctx)
             
-            # Manage positions
+            # Manage existing positions
             await manage_positions(market_data, ctx)
             
             # Update metrics
@@ -226,6 +220,8 @@ async def main_loop(ctx: TradingContext) -> None:
             # Sleep until next iteration
             elapsed = time.time() - start_time
             wait = max(0, ctx.config.get("execution_interval", 60) - elapsed)
+            
+            ctx.logger.debug(f"Loop completed in {elapsed:.2f}s, waiting {wait:.2f}s")
             await asyncio.sleep(wait)
         
         except Exception as e:
@@ -234,30 +230,40 @@ async def main_loop(ctx: TradingContext) -> None:
 
 async def initialize_and_run() -> None:
     """Initialize and run the trading bot"""
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger("TradingBot")
-    
-    # Create context
-    ctx = TradingContext(
-        logger=logger,
-        config=load_config(),
-        db_pool=None,
-        exchange=None
-    )
-    
-    # Initialize components
-    ctx.db_pool = ctx.config.get("database", {}).get("path", "data/candles.db")
-    ctx.ratchet_manager = RatchetManager(ctx)
-    ctx.market_data = MarketData(ctx)
-    
-    safe_load_ml_models(ctx)
-    ctx.exchange = await create_exchange(ctx)
-    
     try:
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger("TradingBot")
+        
+        # Load config
+        config = load_config()
+        
+        # Create context
+        ctx = TradingContext(
+            logger=logger,
+            config=config,
+            db_pool=config.get("database", {}).get("path", "data/candles.db")
+        )
+        
+        # Initialize components
+        ctx.ratchet_manager = RatchetManager(ctx)
+        ctx.market_data = MarketData(ctx)
+        ctx.exchange = await create_exchange(ctx)
+        
+        safe_load_ml_models(ctx)
+        
+        # Start main loop
         await main_loop(ctx)
+        
+    except Exception as e:
+        logger.error(f"Bot initialization failed: {e}")
+        raise
+        
     finally:
-        if ctx.exchange:
+        if hasattr(ctx, 'exchange') and ctx.exchange:
             await ctx.exchange.close()
 
 def main() -> None:
@@ -266,6 +272,9 @@ def main() -> None:
         asyncio.run(initialize_and_run())
     except KeyboardInterrupt:
         print("\nShutting down gracefully...")
+    except Exception as e:
+        print(f"\nFatal error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
