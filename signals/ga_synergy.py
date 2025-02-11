@@ -8,9 +8,11 @@ import os
 import sys
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
+from decimal import Decimal
 import random
+import time
 
 # Add project root to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +32,8 @@ from signals.population import (
 )
 from signals.evaluation import (
     evaluate_rule,
-    simulate_rule
+    calculate_metrics,
+    TradeMetrics
 )
 
 def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> Optional[MarketState]:
@@ -47,15 +50,19 @@ def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> Optional[Ma
         returns = np.log(prices[1:] / prices[:-1])
         latest = candles[-1]
         
+        # Enhanced market state with more indicators
         market_state = MarketState(
             returns=returns,
             ar1_coef=np.corrcoef(returns[:-1], returns[1:])[0,1] if len(returns) > 1 else 0,
             current_return=returns[-1] if len(returns) > 0 else 0,
             volatility=np.std(returns[-20:]) if len(returns) >= 20 else 0,
-            last_price=prices[-1],
-            ema_short=latest.get("EMA_8", 0),
-            ema_long=latest.get("EMA_21", 0),
-            ctx=ctx  # Include context
+            last_price=Decimal(str(prices[-1])),
+            ema_short=Decimal(str(latest.get("EMA_8", 0))),
+            ema_long=Decimal(str(latest.get("EMA_21", 0))),
+            atr=Decimal(str(latest.get("ATR_14", 0))),
+            rsi=Decimal(str(latest.get("RSI_14", 50))),
+            bb_width=Decimal(str(latest.get("BB_WIDTH", 0))),
+            ctx=ctx
         )
         
         ctx.logger.debug(f"Market state prepared: volatility={market_state.volatility:.4f}, "
@@ -78,15 +85,16 @@ def evolve_population(population: List[TradingRule], ctx: Any) -> List[TradingRu
         population_size = len(population)
         elite_count = max(1, int(population_size * 0.1))  # Keep at least 1 elite
         
-        # Sort by fitness
-        population.sort(key=lambda x: x.fitness if hasattr(x, 'fitness') else 0, reverse=True)
+        # Sort by fitness with proper decimal handling
+        population.sort(key=lambda x: float(x.fitness) if hasattr(x, 'fitness') else 0, reverse=True)
         
         # Keep elite rules
         new_population = population[:elite_count]
         
-        # Adjust mutation rate based on population diversity
-        fitness_std = np.std([p.fitness for p in population if hasattr(p, 'fitness')])
-        mutation_rate = min(0.3, max(0.1, fitness_std))  # Dynamic mutation rate
+        # Dynamic mutation rate based on population diversity
+        fitness_values = [float(p.fitness) for p in population if hasattr(p, 'fitness')]
+        fitness_std = np.std(fitness_values) if fitness_values else 0
+        mutation_rate = min(0.3, max(0.1, fitness_std))
         
         # Generate rest of population
         while len(new_population) < population_size:
@@ -123,7 +131,7 @@ def generate_ga_signals(
     try:
         # Get GA settings
         ga_settings = ctx.config.get("ga_settings", {})
-        min_fitness = ga_settings.get("min_fitness", 0.05)
+        min_fitness = Decimal(str(ga_settings.get("min_fitness", "0.05")))
         
         ctx.logger.info(f"Processing {len(candles)} candles with population size {len(population)}")
         
@@ -156,37 +164,28 @@ def generate_ga_signals(
         
         # Generate signal from best rule
         last_candle = candles[-1]
-        signal = evaluate_rule(best_rule, last_candle, market_state)
+        direction, signal_meta = evaluate_rule(best_rule, last_candle, market_state)
         
-        if not signal:
+        if not direction or not signal_meta:
             ctx.logger.info("Rule evaluation produced no signal")
             return []
             
-        # Run detailed simulation for signal parameters
-        ctx.logger.info("Running simulation for signal parameters...")
-        sim_result = simulate_rule(best_rule, candles, market_state, ctx)
-        if not sim_result or not sim_result.trades:
-            ctx.logger.info("Simulation produced no valid trades")
-            return []
-            
-        latest_trade = sim_result.trades[-1]
-        
         # Enhanced signal metrics
-        signal_metrics = {
+        signal = {
             "symbol": last_candle.get("symbol", ""),
-            "direction": signal,
-            "probability": latest_trade.get("probability", 0),
-            "expected_value": latest_trade.get("expected_value", 0),
-            "entry_price": last_candle["close"],
-            "stop_loss": latest_trade.get("stop_loss", 0),
-            "take_profit": latest_trade.get("take_profit", 0),
-            "kelly_fraction": latest_trade.get("kelly_fraction", 0),
+            "direction": direction,
+            "probability": float(signal_meta["probability"]),
+            "expected_value": float(signal_meta["expected_value"]),
+            "kelly_fraction": float(signal_meta["kelly_fraction"]),
+            "entry_price": float(last_candle["close"]),
+            "atr": float(last_candle.get("ATR_14", 0)),
+            "volatility": float(market_state.volatility),
+            "timestamp": time.time(),
             "exchange": ctx.config["exchanges"][0] if ctx.config.get("exchanges") else "unknown"
         }
         
-        ctx.logger.info(f"Signal details: {signal_metrics}")
-        
-        return [signal_metrics]
+        ctx.logger.info(f"Signal details: {signal}")
+        return [signal]
         
     except Exception as e:
         handle_error(e, "ga_synergy.generate_ga_signals", logger=ctx.logger)
@@ -203,8 +202,10 @@ async def run_ga_optimization(ctx: Any) -> None:
         sql_query = """
             SELECT c.*, 
                    (c.high - c.low) / c.low * 100 as candle_range_pct,
-                   (c.close - c.open) / c.open * 100 as candle_body_pct
+                   (c.close - c.open) / c.open * 100 as candle_body_pct,
+                   COALESCE(v.volume_ma_ratio, 1) as volume_ma_ratio
             FROM candles c
+            LEFT JOIN volume_metrics v ON c.id = v.candle_id
             WHERE c.timeframe = ?
             AND c.datetime >= datetime('now', '-30 day')
             AND c.symbol IN ('BTC/USDT', 'ETH/USDT')
@@ -239,8 +240,10 @@ async def run_ga_optimization(ctx: Any) -> None:
             except Exception as e:
                 handle_error(e, "ga_synergy.run_ga_optimization loop", logger=ctx.logger)
                 
-            # Dynamic sleep interval
+            # Dynamic sleep interval based on market activity
             interval = ctx.config.get("ga_interval", 300)  # Default 5 minutes
+            if signals:  # Reduce interval if signals were generated
+                interval = max(60, interval // 2)
             ctx.logger.info(f"Sleeping for {interval} seconds...")
             await asyncio.sleep(interval)
             

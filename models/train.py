@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Module: models/train.py
+Handles ML model training with proper error handling and validation
 """
 
 import os
@@ -8,10 +9,13 @@ import json
 import pickle
 import pandas as pd
 import numpy as np
+from typing import Dict, List, Any, Tuple, Optional
+from decimal import Decimal
+from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 # Optional XGBoost
 try:
@@ -22,231 +26,261 @@ except ImportError:
 
 from utils.error_handler import handle_error
 from database.database import DBConnection
-# from database.database import execute_sql, execute_sql_one  # Not used here
+from indicators.quality_monitor import quality_check
 
-
-def merge_trade_and_candle_data(ctx) -> pd.DataFrame:
-    """
-    Merge 'closed' trades with candle data on time:
-      For each closed trade, find the candle (same symbol) that
-      is <= trade's entry_time (most recent). Use merge_asof.
-    """
-    try:
-        with DBConnection(ctx.db_pool) as conn:
-            trades_df = pd.read_sql_query(
-                "SELECT * FROM trades WHERE close_reason='closed'",
-                conn
-            )
-            candles_df = pd.read_sql_query("SELECT * FROM candles", conn)
-
-        if trades_df.empty:
-            ctx.logger.warning("No closed trades found.")
-            return pd.DataFrame()
-        if candles_df.empty:
-            ctx.logger.warning("No candle data found.")
-            return pd.DataFrame()
-
-        trades_df["entry_time"] = pd.to_datetime(trades_df["entry_time"], errors="coerce")
-        candles_df["datetime"]   = pd.to_datetime(candles_df["datetime"], errors="coerce")
-        trades_df  = trades_df.sort_values("entry_time")
-        candles_df = candles_df.sort_values("datetime")
-
-        merged_df = pd.merge_asof(
-            trades_df,
-            candles_df,
-            left_on="entry_time",
-            right_on="datetime",
-            by="symbol",
-            direction="backward",
-            suffixes=("_trade", "")
-        )
-        merged_df = merged_df.dropna(subset=["datetime"])
-
-        ctx.logger.info(
-            f"Merged data: {merged_df.shape[0]} rows, {merged_df.shape[1]} cols."
-        )
-        return merged_df
-    except Exception as e:
-        handle_error(e, context="Models.merge_trade_and_candle_data", logger=ctx.logger)
-        return pd.DataFrame()
-
-
-def extract_features_and_labels(merged: pd.DataFrame, feature_columns: list):
-    """
-    Pull feature cols from candle portion; label from 'result' (1 if > 0, else 0).
-    """
-    try:
-        if merged.empty:
-            return pd.DataFrame(), []
-
-        for col in feature_columns:
-            if col not in merged.columns:
-                merged[col] = 0
-
-        X = merged[feature_columns].copy()
-        if "result" not in merged.columns:
-            raise ValueError("No 'result' column in merged data.")
-        y = merged["result"].apply(lambda r: 1 if r > 0 else 0).tolist()
-        return X, y
-    except Exception as e:
-        handle_error(e, context="Models.extract_features_and_labels", logger=ctx.logger)
-        return pd.DataFrame(), []
-
-
-def reshape_feature_vector(X: pd.DataFrame) -> np.ndarray:
-    return X.values
-
-
-def ensure_directory_exists(filepath: str) -> None:
-    dir_ = os.path.dirname(filepath)
-    if dir_ and not os.path.exists(dir_):
-        os.makedirs(dir_, exist_ok=True)
-
-
-def save_model(model, filepath: str) -> None:
-    ensure_directory_exists(filepath)
-    with open(filepath, "wb") as f:
-        pickle.dump(model, f)
-
-
-def write_json(data, filepath: str) -> None:
-    ensure_directory_exists(filepath)
-    with open(filepath, "w") as f:
-        json.dump(data, f)
-
-
-def train_models(ctx) -> None:
-    """
-    Orchestrates the data merge, feature extraction, train–test split, training,
-    and saving of both models and columns.
-    """
-    try:
-        merged_data = merge_trade_and_candle_data(ctx)
-        if merged_data.empty:
-            ctx.logger.info("No merged data; training aborted.")
-            return
-
-        # Feature columns
-        default_feats = [
+class ModelTrainer:
+    def __init__(self, ctx: Any):
+        self.ctx = ctx
+        self.logger = ctx.logger
+        self.default_features = [
             "open", "high", "low", "close", "volume",
             "EMA_8", "EMA_21", "EMA_55",
             "RSI_14", "MACD", "MACDs",
-            "ATR_14"
+            "ATR_14", "STOCH_K", "STOCH_D"
         ]
-        feature_columns = ctx.config.get("model_training", {}).get("feature_columns", default_feats)
-        X, y = extract_features_and_labels(merged_data, feature_columns)
-        if X.empty or not y:
-            ctx.logger.error("No usable training data after feature extraction.")
-            return
 
-        X_arr = reshape_feature_vector(X)
-        ctx.logger.info(f"Train data shape: {X_arr.shape}, labels: {len(y)}")
-
-        # Split
-        test_sz = ctx.config.get("model_training", {}).get("test_size", 0.2)
-        X_tr, X_te, y_tr, y_te = train_test_split(X_arr, y, test_size=test_sz, random_state=42)
-
-        # RF hyperparams
-        rf_params = ctx.config.get("model_training", {}).get("rf_params", {
-            "n_estimators": 100,
-            "max_depth": 5,
-            "random_state": 42
-        })
-
-        # Train RF
-        rf_model = None
+    def merge_trade_and_candle_data(self) -> pd.DataFrame:
+        """Merge trade and candle data with proper validation"""
         try:
-            rf_model = RandomForestClassifier(**rf_params)
-            rf_model.fit(X_tr, y_tr)
-            pred_rf = rf_model.predict(X_te)
-            acc_rf = accuracy_score(y_te, pred_rf)
-            ctx.logger.info(f"Random Forest accuracy: {acc_rf:.4f}")
-        except Exception as e:
-            handle_error(e, context="Models.train_models: RF", logger=ctx.logger)
-            rf_model = None
+            with DBConnection(self.ctx.db_pool) as conn:
+                trades_df = pd.read_sql_query(
+                    """
+                    SELECT * FROM trades 
+                    WHERE close_reason = 'closed' 
+                    AND ABS(result) > 0
+                    """,
+                    conn
+                )
+                candles_df = pd.read_sql_query(
+                    "SELECT * FROM candles ORDER BY timestamp",
+                    conn
+                )
 
-        # XGB if enabled
-        xgb_model = None
-        use_xgb = ctx.config.get("model_training", {}).get("use_xgb", False)
-        if XGBOOST_AVAILABLE and use_xgb:
-            try:
-                xgb_params = ctx.config.get("model_training", {}).get("xgb_params", {
+            if trades_df.empty:
+                self.logger.warning("No closed trades found")
+                return pd.DataFrame()
+            if candles_df.empty:
+                self.logger.warning("No candle data found")
+                return pd.DataFrame()
+
+            # Convert timestamps
+            trades_df["entry_time"] = pd.to_datetime(trades_df["entry_time"])
+            candles_df["datetime"] = pd.to_datetime(candles_df["timestamp"], unit="ms")
+            
+            # Sort data
+            trades_df = trades_df.sort_values("entry_time")
+            candles_df = candles_df.sort_values("datetime")
+
+            # Merge with proper validation
+            merged_df = pd.merge_asof(
+                trades_df,
+                candles_df,
+                left_on="entry_time",
+                right_on="datetime",
+                by="symbol",
+                direction="backward",
+                suffixes=("_trade", "")
+            )
+
+            # Validate merge results
+            if merged_df.empty:
+                self.logger.warning("Merge resulted in empty DataFrame")
+                return pd.DataFrame()
+
+            # Check data quality
+            quality_report = quality_check(merged_df, self.ctx)
+            if quality_report["warnings"]:
+                for warning in quality_report["warnings"]:
+                    self.logger.warning(f"Data quality issue: {warning}")
+
+            self.logger.info(
+                f"Merged data: {merged_df.shape[0]} rows, {merged_df.shape[1]} columns"
+            )
+            return merged_df
+
+        except Exception as e:
+            handle_error(e, "ModelTrainer.merge_trade_and_candle_data", logger=self.logger)
+            return pd.DataFrame()
+
+    def extract_features_and_labels(
+        self, merged: pd.DataFrame, feature_columns: Optional[List[str]] = None
+    ) -> Tuple[pd.DataFrame, List[int]]:
+        """Extract features and labels with validation"""
+        try:
+            if merged.empty:
+                return pd.DataFrame(), []
+
+            features = feature_columns or self.default_features
+            
+            # Validate feature columns
+            missing_cols = [col for col in features if col not in merged.columns]
+            if missing_cols:
+                self.logger.warning(f"Missing feature columns: {missing_cols}")
+                for col in missing_cols:
+                    merged[col] = 0
+
+            X = merged[features].copy()
+            
+            if "result" not in merged.columns:
+                raise ValueError("No 'result' column in merged data")
+                
+            y = (merged["result"] > 0).astype(int).tolist()
+
+            # Validate features
+            if X.isnull().any().any():
+                self.logger.warning("Features contain null values, filling with 0")
+                X = X.fillna(0)
+
+            return X, y
+
+        except Exception as e:
+            handle_error(e, "ModelTrainer.extract_features_and_labels", logger=self.logger)
+            return pd.DataFrame(), []
+
+    def train_models(self) -> bool:
+        """Train ML models with proper error handling and validation"""
+        try:
+            # Get training configuration
+            train_cfg = self.ctx.config.get("model_training", {})
+            feature_columns = train_cfg.get("feature_columns", self.default_features)
+            test_size = train_cfg.get("test_size", 0.2)
+            use_xgb = train_cfg.get("use_xgb", False) and XGBOOST_AVAILABLE
+
+            # Get model paths
+            model_paths = self.ctx.config.get("model_paths", {})
+            rf_path = model_paths.get("rf_model", "models/trained_rf.pkl")
+            xgb_path = model_paths.get("xgb_model", "models/trained_xgb.pkl")
+            cols_path = model_paths.get("trained_columns", "models/trained_columns.json")
+
+            # Prepare data
+            merged_data = self.merge_trade_and_candle_data()
+            if merged_data.empty:
+                self.logger.error("No training data available")
+                return False
+
+            X, y = self.extract_features_and_labels(merged_data, feature_columns)
+            if X.empty or not y:
+                self.logger.error("Feature extraction failed")
+                return False
+
+            # Split data
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=42
+            )
+
+            # Train and evaluate Random Forest
+            rf_params = train_cfg.get("rf_params", {
+                "n_estimators": 100,
+                "max_depth": 5,
+                "random_state": 42
+            })
+            
+            rf_model = RandomForestClassifier(**rf_params)
+            rf_model.fit(X_train, y_train)
+            
+            y_pred_rf = rf_model.predict(X_test)
+            metrics_rf = {
+                "accuracy": accuracy_score(y_test, y_pred_rf),
+                "precision": precision_score(y_test, y_pred_rf),
+                "recall": recall_score(y_test, y_pred_rf),
+                "f1": f1_score(y_test, y_pred_rf)
+            }
+            self.logger.info(f"Random Forest metrics: {metrics_rf}")
+
+            # Train and evaluate XGBoost if enabled
+            if use_xgb:
+                xgb_params = train_cfg.get("xgb_params", {
                     "n_estimators": 100,
                     "max_depth": 5,
                     "random_state": 42,
                     "use_label_encoder": False,
                     "eval_metric": "logloss"
                 })
+                
                 xgb_model = XGBClassifier(**xgb_params)
-                xgb_model.fit(X_tr, y_tr)
-                pred_xgb = xgb_model.predict(X_te)
-                acc_xgb = accuracy_score(y_te, pred_xgb)
-                ctx.logger.info(f"XGBoost accuracy: {acc_xgb:.4f}")
-            except Exception as e:
-                handle_error(e, context="Models.train_models: XGB", logger=ctx.logger)
-                xgb_model = None
-        else:
-            ctx.logger.info("XGB not used or not installed.")
+                xgb_model.fit(X_train, y_train)
+                
+                y_pred_xgb = xgb_model.predict(X_test)
+                metrics_xgb = {
+                    "accuracy": accuracy_score(y_test, y_pred_xgb),
+                    "precision": precision_score(y_test, y_pred_xgb),
+                    "recall": recall_score(y_test, y_pred_xgb),
+                    "f1": f1_score(y_test, y_pred_xgb)
+                }
+                self.logger.info(f"XGBoost metrics: {metrics_xgb}")
 
-        # Filepaths
-        mpaths    = ctx.config.get("model_paths", {})
-        rf_path   = mpaths.get("rf_model", os.path.join("models", "trained_rf.pkl"))
-        xgb_path  = mpaths.get("xgb_model", os.path.join("models", "trained_xgb.pkl"))
-        cols_path = mpaths.get("trained_columns", os.path.join("models", "trained_columns.json"))
+            # Save models and columns
+            os.makedirs(os.path.dirname(rf_path), exist_ok=True)
+            with open(rf_path, "wb") as f:
+                pickle.dump(rf_model, f)
+            self.logger.info(f"Saved Random Forest model: {rf_path}")
 
-        # Save
-        if rf_model:
-            save_model(rf_model, rf_path)
-            ctx.logger.info(f"RF model saved: {rf_path}")
-        else:
-            ctx.logger.error("RF model training failed; no save.")
+            if use_xgb:
+                with open(xgb_path, "wb") as f:
+                    pickle.dump(xgb_model, f)
+                self.logger.info(f"Saved XGBoost model: {xgb_path}")
 
-        if xgb_model:
-            save_model(xgb_model, xgb_path)
-            ctx.logger.info(f"XGB model saved: {xgb_path}")
-        else:
-            ctx.logger.info("No XGB model to save.")
+            with open(cols_path, "w") as f:
+                json.dump(feature_columns, f)
+            self.logger.info(f"Saved feature columns: {cols_path}")
 
-        write_json(feature_columns, cols_path)
-        ctx.logger.info(f"Feature columns saved: {cols_path}")
-        ctx.logger.info("Training complete.")
-    except Exception as e:
-        handle_error(e, context="Models.train_models", logger=ctx.logger)
+            return True
 
+        except Exception as e:
+            handle_error(e, "ModelTrainer.train_models", logger=self.logger)
+            return False
+
+def main():
+    """CLI entry point for model training"""
+    import logging
+    from dataclasses import dataclass
+
+    @dataclass
+    class DummyContext:
+        logger: Any
+        config: Dict[str, Any]
+        db_pool: str
+
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger("ModelTraining")
+
+    # Create dummy context
+    ctx = DummyContext(
+        logger=logger,
+        config={
+            "model_training": {
+                "feature_columns": [
+                    "open", "high", "low", "close", "volume",
+                    "EMA_8", "EMA_21", "EMA_55",
+                    "RSI_14", "MACD", "MACDs",
+                    "ATR_14", "STOCH_K", "STOCH_D"
+                ],
+                "test_size": 0.2,
+                "use_xgb": XGBOOST_AVAILABLE,
+                "rf_params": {
+                    "n_estimators": 100,
+                    "max_depth": 5,
+                    "random_state": 42
+                }
+            },
+            "model_paths": {
+                "rf_model": "models/trained_rf.pkl",
+                "xgb_model": "models/trained_xgb.pkl",
+                "trained_columns": "models/trained_columns.json"
+            }
+        },
+        db_pool="data/trading.db"
+    )
+
+    trainer = ModelTrainer(ctx)
+    success = trainer.train_models()
+    if not success:
+        logger.error("Model training failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    # Demo usage
-    import logging
-    logging.basicConfig(level=logging.INFO)
-
-    class DummyCtx:
-        pass
-
-    ctx = DummyCtx()
-    ctx.logger = logging.getLogger("TradingBot")
-
-    ctx.config = {
-        "db_pool": "data/candles.db",
-        "model_training": {
-            "feature_columns": [
-                "open", "high", "low", "close", "volume",
-                "EMA_8", "EMA_21", "EMA_55",
-                "RSI_14", "MACD", "MACDs",
-                "ATR_14"
-            ],
-            "test_size": 0.2,
-            "rf_params": {
-                "n_estimators": 100,
-                "max_depth": 5,
-                "random_state": 42
-            },
-            "use_xgb": False
-        },
-        "model_paths": {
-            "rf_model": "models/trained_rf.pkl",
-            "xgb_model": "models/trained_xgb.pkl",
-            "trained_columns": "models/trained_columns.json"
-        }
-    }
-
-    train_models(ctx)
+    main()

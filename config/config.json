@@ -2,62 +2,56 @@
   "paper_mode": true,
   "market_list": ["BTC/USDT", "ETH/USDT"],
   "timeframe": "15m",
-  "timeframe_minutes": 15,
-  "execution_interval": 5,
+  "execution_interval": 3,
 
-  "ml_long_threshold": 0.75,
-  "ml_short_threshold": 0.3,
-  "missing_threshold": 0.1,
+  "trading_fees": 0.004,
+  "slippage": 0.002,
+  
+  "max_hold_hours": 24,
+  "max_position_pct": 10.0,
+  "take_profit_pct": 1.0,
+  "stop_loss_pct": 0.5,
+  
+  "ratchet_thresholds": [1.0, 2.0, 3.0],
+  "ratchet_lock_ins": [0.3, 0.6, 0.9],
+  "risk_factor": 0.025,
+  "kelly_scaling": 0.3,
 
-  "ratchet_thresholds": [1.5, 3, 4.5],
-  "ratchet_lock_ins": [0.5, 1, 1.5],
-  "kelly_scaling": 0.2,
-  "kelly_max_fraction": 0.1,
-  "min_position_size": 0.01,
-  "emergency_stop_pct": -2,
-  "max_hold_hours": 26,
+  "ml_long_threshold": 0.65,
+  "ml_short_threshold": 0.35,
+  "min_signal_strength": 0.65,
+  "min_expected_value": 0.015,
 
-  "commission_rate": 0.005,
-  "slippage_rate": 0.002,
+  "max_positions": 3,
+  "max_leverage": 2.0,
+  "max_drawdown": 0.1,
+  "max_daily_loss": 0.03,
 
-  "ga_settings": {
-    "population_size": 250,        
-    "mutation_rate": 0.25,         
-    "crossover_rate": 0.75,         
-    "buy_conditions_count": 3,
-    "sell_conditions_count": 3,
-    "min_fitness": 0.05,          
-    "chunk_size": 50000,
-    "trailing_distance": 20.0,
-    "max_exposure_ratio": 0.7,
-    "allow_shorts": true
-  },
-
-  "auto_new_trades": true,
-  "exchanges": ["kucoin", "bybit"],
+  "allow_new_trades": true,
+  "exchanges": ["bybit", "kucoin", "paper", "backtest"],
   "exchange_settings": {
-    "timeout": 30000,
+    "timeout": 15000,
     "enableRateLimit": true
   },
 
   "database": {
     "type": "sqlite",
-    "path": "data/candles.db"
+    "path": "data/trading.db"
   },
 
   "min_trade_sizes": {
     "BTC/USDT": {
-      "min_notional": 2,
+      "min_notional": 5,
       "min_qty": 0.0001
     },
     "ETH/USDT": {
-      "min_notional": 2,
+      "min_notional": 5,
       "min_qty": 0.001
     }
   },
 
   "indicators": {
-    "ema_periods": [8, 21, 55, 233],
+    "ema_periods": [8, 21, 55],
     "rsi_period": 14,
     "macd_fast": 12,
     "macd_slow": 26,
@@ -81,9 +75,7 @@
   },
 
   "retry_settings": {
-    "max_retries": 5,
-    "delay": 2
-  },
-  
-  "risk_factor": 0.02
+    "max_retries": 3,
+    "delay": 1
+  }
 }

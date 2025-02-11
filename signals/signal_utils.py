@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-signals/signal_utils.py - Signal combination and utility functions
+signals/signal_utils.py - Signal combination and validation utilities
 """
-from typing import List, Dict, Any
+from decimal import Decimal
+from typing import List, Dict, Any, Optional, Tuple
+import time
+import logging
+
 from utils.error_handler import handle_error
+from risk.validation import validate_market_data, validate_risk_parameters
 
 def combine_signals(
     ml_signals: List[Dict[str, Any]],
@@ -14,75 +19,107 @@ def combine_signals(
     Combine and reconcile trading signals from ML and GA modules.
     
     Priority Logic:
-    1. If signals agree -> Use average of probabilities
+    1. If signals agree -> Use weighted average based on confidence
     2. If signals conflict -> Use signal with higher confidence if above threshold
-    3. If only one signal exists -> Use it directly
+    3. If only one signal exists -> Use it with validation
     """
+    # Get configuration parameters with proper decimal handling
+    ml_prefer_threshold = Decimal(str(ctx.config.get("ml_prefer_threshold", "0.6")))
+    ga_fitness_scale = Decimal(str(ctx.config.get("ga_fitness_scale", "1.0")))
+    min_probability = Decimal(str(ctx.config.get("min_signal_probability", "0.55")))
+
+    # Initialize containers
+    final_signals = []
+    
     try:
-        ml_prefer_threshold = ctx.config.get("ml_prefer_threshold", 0.5)
-        ga_fitness_scale = ctx.config.get("ga_fitness_scale", 1.0)
-
-        final_signals = []
-        ml_map = {sig["symbol"]: sig for sig in ml_signals}
-        ga_map = {sig["symbol"]: sig for sig in ga_signals}
+        # Pre-validate signals and create lookup maps
+        ml_map = {}
+        ga_map = {}
+        
+        for sig in ml_signals:
+            if validate_signal(sig, ctx):
+                ml_map[sig["symbol"]] = sig
+                
+        for sig in ga_signals:
+            if validate_signal(sig, ctx):
+                ga_map[sig["symbol"]] = sig
+                
         all_symbols = set(ml_map.keys()).union(ga_map.keys())
+        
+        ctx.logger.debug(f"Processing signals for {len(all_symbols)} symbols")
 
+        # Process each symbol
         for symbol in all_symbols:
-            signal = None
-            
-            # Both signals exist
-            if symbol in ml_map and symbol in ga_map:
-                ml_signal = ml_map[symbol]
-                ga_signal = ga_map[symbol]
+            try:
+                signal = None
                 
-                # Scale GA probability
-                ga_prob = ga_signal.get("probability", 0.0) * ga_fitness_scale
+                # Case 1: Both signals exist
+                if symbol in ml_map and symbol in ga_map:
+                    ml_signal = ml_map[symbol]
+                    ga_signal = ga_map[symbol]
+                    
+                    # Scale GA probability
+                    ga_prob = Decimal(str(ga_signal.get("probability", 0))) * ga_fitness_scale
 
-                # Signals agree
-                if ml_signal["direction"] == ga_signal["direction"]:
-                    # Average probabilities
-                    combined_prob = (ml_signal.get("probability", 0.0) + ga_prob) / 2.0
-                    signal = {
-                        "symbol": symbol,
-                        "direction": ml_signal["direction"],
-                        "probability": combined_prob,
-                        "expected_value": (
-                            ml_signal.get("expected_value", 0.0) + 
-                            ga_signal.get("expected_value", 0.0)
-                        ) / 2.0,
-                        "entry_price": ml_signal["entry_price"],
-                        "stop_loss": ml_signal.get("stop_loss") or ga_signal.get("stop_loss"),
-                        "take_profit": ml_signal.get("take_profit") or ga_signal.get("take_profit"),
-                        "kelly_fraction": (
-                            ml_signal.get("kelly_fraction", 0.0) + 
-                            ga_signal.get("kelly_fraction", 0.0)
-                        ) / 2.0,
-                        "exchange": ml_signal["exchange"]
-                    }
-                
-                # Signals conflict
-                else:
-                    # Use ML if probability exceeds threshold
-                    if ml_signal.get("probability", 0.0) >= ml_prefer_threshold:
-                        signal = ml_signal
+                    # Signals agree on direction
+                    if ml_signal["direction"] == ga_signal["direction"]:
+                        ml_weight = Decimal(str(ml_signal.get("probability", 0)))
+                        combined_prob = (ml_weight + ga_prob) / Decimal("2.0")
+                        
+                        if combined_prob >= min_probability:
+                            signal = {
+                                "symbol": symbol,
+                                "direction": ml_signal["direction"],
+                                "probability": float(combined_prob),
+                                "expected_value": (
+                                    float(Decimal(str(ml_signal.get("expected_value", 0))) + 
+                                    Decimal(str(ga_signal.get("expected_value", 0)))) / 2.0,
+                                "entry_price": float(ml_signal["entry_price"]),
+                                "stop_loss": float(ml_signal.get("stop_loss") or ga_signal.get("stop_loss", 0)),
+                                "take_profit": float(ml_signal.get("take_profit") or ga_signal.get("take_profit", 0)),
+                                "kelly_fraction": (
+                                    float(Decimal(str(ml_signal.get("kelly_fraction", 0))) + 
+                                    Decimal(str(ga_signal.get("kelly_fraction", 0)))) / 2.0,
+                                "exchange": ml_signal["exchange"],
+                                "timestamp": time.time()
+                            }
+                    
+                    # Signals conflict
                     else:
-                        signal = {**ga_signal, "probability": ga_prob}
-            
-            # Only ML signal exists
-            elif symbol in ml_map:
-                signal = ml_map[symbol]
-            
-            # Only GA signal exists
-            else:
-                ga_signal = ga_map[symbol]
-                signal = {
-                    **ga_signal,
-                    "probability": ga_signal.get("probability", 0.0) * ga_fitness_scale
-                }
+                        ml_prob = Decimal(str(ml_signal.get("probability", 0)))
+                        if ml_prob >= ml_prefer_threshold:
+                            signal = dict(ml_signal)
+                            signal["timestamp"] = time.time()
+                        elif ga_prob >= min_probability:
+                            signal = dict(ga_signal)
+                            signal["probability"] = float(ga_prob)
+                            signal["timestamp"] = time.time()
+                
+                # Case 2: Only ML signal exists
+                elif symbol in ml_map:
+                    ml_signal = ml_map[symbol]
+                    if Decimal(str(ml_signal.get("probability", 0))) >= min_probability:
+                        signal = dict(ml_signal)
+                        signal["timestamp"] = time.time()
+                
+                # Case 3: Only GA signal exists
+                elif symbol in ga_map:
+                    ga_signal = ga_map[symbol]
+                    ga_prob = Decimal(str(ga_signal.get("probability", 0))) * ga_fitness_scale
+                    if ga_prob >= min_probability:
+                        signal = dict(ga_signal)
+                        signal["probability"] = float(ga_prob)
+                        signal["timestamp"] = time.time()
 
-            if signal:
-                final_signals.append(signal)
+                # Validate and add final signal
+                if signal and validate_signal(signal, ctx):
+                    final_signals.append(signal)
 
+            except Exception as e:
+                handle_error(e, f"signal_utils.combine_signals.symbol_loop: {symbol}", logger=ctx.logger)
+                continue
+
+        ctx.logger.info(f"Generated {len(final_signals)} combined signals")
         return final_signals
 
     except Exception as e:
@@ -90,33 +127,74 @@ def combine_signals(
         return []
 
 def validate_signal(signal: Dict[str, Any], ctx: Any) -> bool:
-    """
-    Validate trading signal meets minimum requirements.
-    """
+    """Validate trading signal meets minimum requirements and risk parameters."""
     try:
+        # Basic validation
         if not signal:
             return False
             
+        # Required fields check
         required_fields = [
             "symbol", "direction", "probability", 
             "entry_price", "exchange"
         ]
         
-        # Check required fields exist
         if not all(field in signal for field in required_fields):
+            ctx.logger.debug(f"Signal missing required fields: {signal.get('symbol', 'unknown')}")
             return False
             
-        # Validate direction
+        # Direction validation
         if signal["direction"] not in ["long", "short"]:
+            ctx.logger.debug(f"Invalid signal direction: {signal.get('direction')}")
             return False
             
-        # Check probability thresholds
-        min_prob = ctx.config.get("min_signal_probability", 0.0)
-        if signal["probability"] < min_prob:
+        # Numeric validations
+        try:
+            probability = Decimal(str(signal["probability"]))
+            entry_price = Decimal(str(signal["entry_price"]))
+            min_prob = Decimal(str(ctx.config.get("min_signal_probability", "0.55")))
+            
+            if probability < min_prob:
+                ctx.logger.debug(f"Signal probability too low: {float(probability)}")
+                return False
+                
+            if entry_price <= 0:
+                ctx.logger.debug("Invalid entry price")
+                return False
+                
+            # Optional field validations
+            if signal.get("stop_loss"):
+                stop_loss = Decimal(str(signal["stop_loss"]))
+                if stop_loss <= 0:
+                    ctx.logger.debug("Invalid stop loss")
+                    return False
+                    
+            if signal.get("take_profit"):
+                take_profit = Decimal(str(signal["take_profit"]))
+                if take_profit <= 0:
+                    ctx.logger.debug("Invalid take profit")
+                    return False
+                    
+        except (ValueError, TypeError):
+            ctx.logger.debug("Error converting numeric values")
             return False
             
-        # Validate numeric values
-        if signal["entry_price"] <= 0:
+        # Risk parameter validation
+        risk_params = {
+            "position_size": signal.get("kelly_fraction", 0.1),
+            "stop_loss_pct": (
+                abs(entry_price - Decimal(str(signal.get("stop_loss", 0)))) / entry_price 
+                if signal.get("stop_loss") else Decimal("0.02")
+            ),
+            "take_profit_pct": (
+                abs(Decimal(str(signal.get("take_profit", 0))) - entry_price) / entry_price
+                if signal.get("take_profit") else Decimal("0.03")
+            )
+        }
+        
+        is_valid, error = validate_risk_parameters(risk_params)
+        if not is_valid:
+            ctx.logger.debug(f"Risk parameter validation failed: {error}")
             return False
             
         return True

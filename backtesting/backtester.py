@@ -6,9 +6,14 @@ Comprehensive backtesting framework with proper risk management
 
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
+import uuid
+import logging
+import pandas_ta as ta
+
 from database.database import DBConnection, execute_sql
 from utils.error_handler import handle_error
 from trading.math import (
@@ -21,8 +26,9 @@ from trading.math import (
 )
 from trading.ratchet import RatchetManager
 from indicators.indicators_pta import compute_indicators
-import uuid
-import logging
+from signals.trading_types import MarketState
+from signals.population import create_baseline_rule
+from signals.evaluation import evaluate_rule
 
 @dataclass
 class BacktestResults:
@@ -36,14 +42,25 @@ class BacktestResults:
     trades: List[Dict[str, Any]]
     equity_curve: pd.Series
 
+    def __str__(self) -> str:
+        return (
+            f"Total Trades: {self.total_trades}\n"
+            f"Win Rate: {self.win_rate:.2%}\n"
+            f"Profit Factor: {self.profit_factor:.2f}\n"
+            f"Sharpe Ratio: {self.sharpe_ratio:.2f}\n"
+            f"Max Drawdown: {self.max_drawdown:.2%}\n"
+            f"Total Return: {self.total_return:.2%}"
+        )
+
 class Backtester:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.initial_balance = ctx.config.get("initial_balance", 10000)
-        self.commission = ctx.config.get("commission_rate", 0.001)
+        self.initial_balance = Decimal(str(ctx.config.get("initial_balance", 10000)))
+        self.commission = Decimal(str(ctx.config.get("commission_rate", 0.001)))
         self.max_hold_bars = int((ctx.config.get("max_hold_hours", 8) * 60) / 
                                 ctx.config.get("timeframe_minutes", 15))
         self.ratchet_manager = RatchetManager(ctx)
+        self.logger = ctx.logger or logging.getLogger(__name__)
 
     def _format_datetime(self, dt) -> str:
         """Convert datetime objects to string format"""
@@ -64,25 +81,26 @@ class Backtester:
                 df = pd.read_sql_query(query, conn, params=[start_date, end_date])
                 
                 if df.empty:
-                    self.ctx.logger.warning("No data found for the specified date range")
+                    self.logger.warning("No data found for the specified date range")
                 else:
-                    self.ctx.logger.info(f"Loaded {len(df)} candles for backtesting")
+                    self.logger.info(f"Loaded {len(df)} candles for backtesting")
                 return df
                 
         except Exception as e:
-            handle_error(e, "Backtester.load_data", logger=self.ctx.logger)
+            handle_error(e, "Backtester.load_data", logger=self.logger)
             return pd.DataFrame()
 
     def record_backtest_trade(self, trade: Dict[str, Any]) -> None:
         """Record backtest trade to database"""
         try:
             with DBConnection(self.ctx.db_pool) as conn:
-                sql_ins = (
-                    "INSERT INTO trades (id, symbol, timeframe, trade_source, direction, "
-                    "entry_price, sl, tp, entry_time, close_time, result, close_reason, "
-                    "exchange, position_size) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                )
+                sql_ins = """
+                    INSERT INTO trades (
+                        id, symbol, timeframe, trade_source, direction,
+                        entry_price, sl, tp, entry_time, close_time, result, 
+                        close_reason, exchange, position_size
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
                 params_ins = [
                     trade["id"],
                     trade["symbol"],
@@ -102,12 +120,10 @@ class Backtester:
                 execute_sql(conn, sql_ins, params_ins)
                 
         except Exception as e:
-            handle_error(e, "Backtester.record_backtest_trade", logger=self.ctx.logger)
+            handle_error(e, "Backtester.record_backtest_trade", logger=self.logger)
 
-    def prepare_market_state(self, data: pd.DataFrame) -> Any:
+    def prepare_market_state(self, data: pd.DataFrame) -> Optional[MarketState]:
         """Prepare market state for signal generation"""
-        from signals.trading_types import MarketState
-        
         if data.empty:
             return None
             
@@ -134,66 +150,66 @@ class Backtester:
 
     def _calculate_position_size(
             self,
-            balance: float,
+            balance: Decimal,
             signal: Dict[str, Any],
-            price: float,
+            price: Decimal,
             volatility: float
-        ) -> float:
+        ) -> Decimal:
         """Calculate position size with strict risk management"""
-        probability = signal.get("probability", 0.6)
-        kelly = calculate_kelly_fraction(probability, price * 0.02, price * 0.01)
+        probability = Decimal(str(signal.get("probability", 0.6)))
+        kelly = calculate_kelly_fraction(probability, price * Decimal('0.02'), price * Decimal('0.01'))
         
         # Enforce strict Kelly limit
-        kelly = min(kelly, 0.2)  # Max 20% Kelly
+        kelly = min(kelly, Decimal('0.2'))  # Max 20% Kelly
         
         position = calculate_position_size(
             balance,
-            kelly * self.ctx.config.get("kelly_scaling", 0.5),
+            kelly * Decimal(str(self.ctx.config.get("kelly_scaling", 0.5))),
             price,
-            volatility,
-            self.ctx.config.get("risk_factor", 0.1)
+            Decimal(str(volatility)),
+            Decimal(str(self.ctx.config.get("risk_factor", 0.1)))
         )
         
         # Apply strict 10% position limit
-        max_position = balance * 0.10  # Max 10% of balance
+        max_position = balance * Decimal('0.10')  # Max 10% of balance
         return min(position, max_position / price)
 
     def _execute_trade(
             self,
             signal: Dict[str, Any],
-            position_size: float,
+            position_size: Decimal,
             entry_candle: pd.Series,
             future_data: pd.DataFrame,
-            market_state: Any
+            market_state: MarketState
         ) -> Optional[Dict[str, Any]]:
         """Execute trade with comprehensive risk management"""
-        entry_price = entry_candle["close"]
+        entry_price = Decimal(str(entry_candle["close"]))
         entry_cost = position_size * entry_price * self.commission
         entry_time = pd.to_datetime(entry_candle["datetime"])
         
         # Enforce strict 10% position size limit
-        max_position = self.initial_balance * 0.10  # Max 10% of balance
+        max_position = self.initial_balance * Decimal('0.10')  # Max 10% of balance
         position_size = min(position_size, max_position / entry_price)
         
         # Set strict stops
-        stop_loss = entry_price * (1 - self.ctx.config.get("stop_loss_pct", 0.02))
-        take_profit = entry_price * (1 + self.ctx.config.get("take_profit_pct", 0.03))
+        stop_loss = entry_price * (Decimal('1') - Decimal(str(self.ctx.config.get("stop_loss_pct", 0.02))))
+        take_profit = entry_price * (Decimal('1') + Decimal(str(self.ctx.config.get("take_profit_pct", 0.03))))
         
         trade_id = str(uuid.uuid4())
-        self.ratchet_manager.initialize_trade(trade_id, entry_price)
+        self.ratchet_manager.initialize_trade(trade_id, float(entry_price))
         
-        max_adverse_excursion = 0
-        max_favorable_excursion = 0
+        max_adverse_excursion = Decimal('0')
+        max_favorable_excursion = Decimal('0')
         
         try:
-            for i, candle in future_data.iterrows():
+            for _, candle in future_data.iterrows():
                 # Update excursions
                 if signal["direction"] == "long":
-                    adverse_excursion = (entry_price - min(candle["low"], candle["close"])) / entry_price
-                    favorable_excursion = (max(candle["high"], candle["close"]) - entry_price) / entry_price
+                    adverse_excursion = (entry_price - Decimal(str(min(candle["low"], candle["close"])))) / entry_price
+                    favorable_excursion = (Decimal(str(max(candle["high"], candle["close"]))) - entry_price) / entry_price
                 else:
-                    adverse_excursion = (max(candle["high"], candle["close"]) - entry_price) / entry_price
-                    favorable_excursion = (entry_price - min(candle["low"], candle["close"])) / entry_price
+                    adverse_excursion = (Decimal(str(max(candle["high"], candle["close"]))) - entry_price) / entry_price
+                    favorable_excursion = (entry_price - Decimal(str(min(candle["low"], candle["close"])))) / entry_price
                 
                 max_adverse_excursion = max(max_adverse_excursion, adverse_excursion)
                 max_favorable_excursion = max(max_favorable_excursion, favorable_excursion)
@@ -205,36 +221,36 @@ class Backtester:
                 
                 # Stop loss check
                 if signal["direction"] == "long":
-                    if candle["low"] <= stop_loss:
+                    if Decimal(str(candle["low"])) <= stop_loss:
                         hit_stop = True
                         exit_price = stop_loss
                         exit_reason = "stop_loss"
                 else:
-                    if candle["high"] >= stop_loss:
+                    if Decimal(str(candle["high"])) >= stop_loss:
                         hit_stop = True
                         exit_price = stop_loss
                         exit_reason = "stop_loss"
                 
                 # Take profit check
                 if signal["direction"] == "long":
-                    if candle["high"] >= take_profit:
+                    if Decimal(str(candle["high"])) >= take_profit:
                         hit_stop = True
                         exit_price = take_profit
                         exit_reason = "take_profit"
                 else:
-                    if candle["low"] <= take_profit:
+                    if Decimal(str(candle["low"])) <= take_profit:
                         hit_stop = True
                         exit_price = take_profit
                         exit_reason = "take_profit"
                 
                 # Ratchet stop check
-                ratchet_update = self.ratchet_manager.update_price(trade_id, candle["close"])
+                ratchet_update = self.ratchet_manager.update_price(trade_id, float(candle["close"]))
                 if ratchet_update:
                     new_stop, reason = ratchet_update
-                    if (signal["direction"] == "long" and candle["low"] <= new_stop) or \
-                       (signal["direction"] == "short" and candle["high"] >= new_stop):
+                    if (signal["direction"] == "long" and Decimal(str(candle["low"])) <= Decimal(str(new_stop))) or \
+                       (signal["direction"] == "short" and Decimal(str(candle["high"])) >= Decimal(str(new_stop))):
                         hit_stop = True
-                        exit_price = new_stop
+                        exit_price = Decimal(str(new_stop))
                         exit_reason = f"ratchet_{reason}"
                 
                 # Max hold time check
@@ -242,13 +258,13 @@ class Backtester:
                 if (current_time - entry_time).total_seconds() >= \
                    (self.ctx.config.get("max_hold_hours", 8) * 3600):
                     hit_stop = True
-                    exit_price = candle["close"]
+                    exit_price = Decimal(str(candle["close"]))
                     exit_reason = "max_hold_time"
                 
                 # Emergency stop check
-                if max_adverse_excursion >= abs(self.ctx.config.get("emergency_stop_pct", -3) / 100):
+                if max_adverse_excursion >= abs(Decimal(str(self.ctx.config.get("emergency_stop_pct", -3))) / Decimal('100')):
                     hit_stop = True
-                    exit_price = candle["close"]
+                    exit_price = Decimal(str(candle["close"]))
                     exit_reason = "emergency_stop"
                 
                 if hit_stop:
@@ -266,15 +282,15 @@ class Backtester:
     def _close_trade(
             self,
             signal: Dict[str, Any],
-            position_size: float,
-            entry_price: float,
-            exit_price: float,
-            entry_cost: float,
+            position_size: Decimal,
+            entry_price: Decimal,
+            exit_price: Decimal,
+            entry_cost: Decimal,
             exit_time: str,
             entry_time: str,
             exit_reason: str,
-            max_adverse_excursion: float,
-            max_favorable_excursion: float
+            max_adverse_excursion: Decimal,
+            max_favorable_excursion: Decimal
         ) -> Dict[str, Any]:
         """Calculate trade result with fees"""
         exit_cost = position_size * exit_price * self.commission
@@ -289,18 +305,18 @@ class Backtester:
         
         # Sanity check on PnL
         if abs(net_pnl) > self.initial_balance:
-            self.ctx.logger.warning(f"Excessive PnL detected: {net_pnl}. Capping gains/losses.")
+            self.logger.warning(f"Excessive PnL detected: {net_pnl}. Capping gains/losses.")
             net_pnl = self.initial_balance if net_pnl > 0 else -self.initial_balance
             
         return {
             "id": str(uuid.uuid4()),
             "symbol": signal.get("symbol", ""),
             "direction": signal["direction"],
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "position_size": position_size,
-            "pnl": net_pnl,
-            "return": net_pnl / (position_size * entry_price) if position_size > 0 else 0,
+            "entry_price": float(entry_price),
+            "exit_price": float(exit_price),
+            "position_size": float(position_size),
+            "pnl": float(net_pnl),
+            "return": float(net_pnl / (position_size * entry_price)) if position_size > 0 else 0,
             "entry_time": entry_time,
             "exit_time": exit_time,
             "sl": signal.get("sl", 0),
@@ -308,9 +324,9 @@ class Backtester:
             "exchange": signal.get("exchange", "backtest"),
             "trade_source": "backtest",
             "exit_reason": exit_reason,
-            "fees_paid": total_fees,
-            "max_adverse_excursion": max_adverse_excursion,
-            "max_favorable_excursion": max_favorable_excursion
+            "fees_paid": float(total_fees),
+            "max_adverse_excursion": float(max_adverse_excursion),
+            "max_favorable_excursion": float(max_favorable_excursion)
         }
 
     def _calculate_metrics(
@@ -363,17 +379,13 @@ class Backtester:
     def simulate_trades(self, data: pd.DataFrame) -> BacktestResults:
         """Run backtest simulation with comprehensive risk management"""
         balance = self.initial_balance
-        equity_curve = [balance]
+        equity_curve = [float(balance)]
         trades = []
         
-        # Create baseline rules
-        from signals.population import create_baseline_rule
-        baseline_rule = create_baseline_rule()
-        
-        self.ctx.logger.info("Starting backtest simulation...")
+        self.logger.info("Starting backtest simulation...")
         
         for symbol, group in data.groupby("symbol"):
-            self.ctx.logger.info(f"Processing {symbol}")
+            self.logger.info(f"Processing {symbol}")
             market_state = self.prepare_market_state(group)
             
             if market_state is None:
@@ -391,14 +403,13 @@ class Backtester:
                 current_candle = window.iloc[-1]
                 
                 # Evaluate trading rule
-                from signals.evaluation import evaluate_rule
-                signal = evaluate_rule(baseline_rule, current_candle.to_dict(), market_state)
+                signal = evaluate_rule(create_baseline_rule(), current_candle.to_dict(), market_state)
                 
                 if signal:
                     pos_size = self._calculate_position_size(
                         balance,
                         {"probability": 0.6},
-                        current_candle["close"],
+                        Decimal(str(current_candle["close"])),
                         market_state.volatility
                     )
                     
@@ -417,30 +428,24 @@ class Backtester:
                     
                     if trade_result:
                         trades.append(trade_result)
-                        balance += trade_result["pnl"]
-                        equity_curve.append(balance)
+                        balance += Decimal(str(trade_result["pnl"]))
+                        equity_curve.append(float(balance))
                         
                         self.record_backtest_trade(trade_result)
                         
-                        self.ctx.logger.info(
+                        self.logger.info(
                             f"Trade completed: {symbol} {trade_result['direction']} "
                             f"PnL: {trade_result['pnl']:.2f} "
-                            f"Balance: {balance:.2f} "
+                            f"Balance: {float(balance):.2f} "
                             f"Exit: {trade_result['exit_reason']}"
                         )
                     
                 elif i % 1000 == 0:  # Periodic equity tracking even without trades
-                    equity_curve.append(balance)
+                    equity_curve.append(float(balance))
         
         results = self._calculate_metrics(trades, pd.Series(equity_curve))
         
-        self.ctx.logger.info(f"\nBacktest Summary:")
-        self.ctx.logger.info(f"Total Trades: {results.total_trades}")
-        self.ctx.logger.info(f"Win Rate: {results.win_rate:.2%}")
-        self.ctx.logger.info(f"Profit Factor: {results.profit_factor:.2f}")
-        self.ctx.logger.info(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
-        self.ctx.logger.info(f"Max Drawdown: {results.max_drawdown:.2%}")
-        self.ctx.logger.info(f"Total Return: {results.total_return:.2%}")
+        self.logger.info(f"\nBacktest Summary:\n{results}")
         
         return results
 
@@ -505,13 +510,7 @@ if __name__ == "__main__":
         
         print("\nBacktest Results:")
         print("=" * 50)
-        print(f"Total Trades: {results.total_trades}")
-        print(f"Win Rate: {results.win_rate:.2%}")
-        print(f"Profit Factor: {results.profit_factor:.2f}")
-        print(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
-        print(f"Max Drawdown: {results.max_drawdown:.2%}")
-        print(f"Total Return: {results.total_return:.2%}")
-        print("=" * 50)
+        print(results)
         
         # Additional analytics
         if results.trades:

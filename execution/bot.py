@@ -1,188 +1,293 @@
 #!/usr/bin/env python3
 """
 Module: execution/bot.py
-Production‑ready main bot orchestrator.
+Main trading bot orchestrator with paper/live trading support and proper risk management.
 """
 
 import asyncio
 import time
-import json
-import os
 import logging
-import sys
-import signal
-from dataclasses import dataclass
-from typing import Dict, Any, Optional, List
 from decimal import Decimal
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta
 
-# Core trading components
 from risk.manager import RiskManager
-from risk.position import Position
 from risk.portfolio import PortfolioManager
-from risk.limits import RiskLimits
-
-# Market data and signals
-from market.data import MarketData
-from models.signals import MLSignal
+from risk.validation import MarketDataValidation
+from execution.market_data import MarketData
+from models.ml_signal import generate_ml_signals
 from signals.ga_synergy import generate_ga_signals
-from signals.utils import combine_signals, validate_signal
-
-# Exchange and execution
-from exchange.client import ExchangeClient
-from exchange.orders import OrderManager
-
-# System components
+from trading.math import (
+    calculate_kelly_fraction,
+    calculate_position_size,
+    calculate_expected_value
+)
+from execution.exchange_interface import ExchangeInterface
 from utils.health_monitor import HealthMonitor
-from utils.circuit_breaker import CircuitBreaker
-from database.manager import DatabaseManager
+from trading.circuit_breaker import CircuitBreaker, CircuitBreakerState
+from trading.ratchet import RatchetManager
+from database.database import DBConnection
+from utils.error_handler import handle_error
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-@dataclass
 class TradingContext:
-    config: dict
-    logger: logging.Logger
-    db_pool: str
-    running: bool = True
-    exchange: Any = None
-    market_data: Optional[MarketData] = None
-    risk_manager: Optional[RiskManager] = None
-    ratchet_manager: Optional[RatchetManager] = None
-    ml_models: Optional[Dict[str, Any]] = None
+    """Trading context maintaining all component instances and state"""
+    def __init__(self):
+        self.config = None
+        self.logger = None
+        self.running = False
+        self.exchange_interface = None
+        self.market_data = None
+        self.portfolio_manager = None
+        self.risk_manager = None
+        self.circuit_breaker = None
+        self.health_monitor = None
+        self.ratchet_manager = None
+        self.market_validator = None
+        self.last_health_check = 0
+        self.last_metrics_update = 0
 
-def load_config() -> dict:
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "config.json")
-    with open(config_path, "r") as f:
-        config = json.load(f)
-    return config
-
-def safe_load_ml_models(ctx: TradingContext) -> None:
+async def validate_signal(signal: Dict[str, Any], ctx: TradingContext) -> bool:
+    """Validate trading signal meets minimum criteria"""
     try:
-        ctx.logger.info("Loading ML models …")
-        ctx.ml_models = load_models(ctx.config.get("model_path"), ctx.config.get("scaler_path"))
-        ctx.logger.info("ML models loaded.")
+        if signal["ml_signal"]["strength"] < ctx.config["min_signal_strength"]:
+            return False
+        if signal["expected_value"] < ctx.config["min_expected_value"]:
+            return False
+        if signal["direction"] == "long" and signal["ml_signal"]["prediction"] < ctx.config["ml_long_threshold"]:
+            return False
+        if signal["direction"] == "short" and signal["ml_signal"]["prediction"] > ctx.config["ml_short_threshold"]:
+            return False
+        return True
     except Exception as e:
-        ctx.logger.error(f"Error loading ML models: {e}")
-        ctx.ml_models = None
+        handle_error(e, "validate_signal", logger=ctx.logger)
+        return False
 
-async def main_loop(ctx: TradingContext) -> None:
-    while ctx.running:
-        try:
-            symbols: List[str] = ctx.config.get("market_list", [])
-            market_data_dict, _ = await ctx.market_data.load_market_data(symbols)
-            if not market_data_dict:
-                ctx.logger.warning("No market data available.")
-                await asyncio.sleep(5)
+async def process_market_data(ctx: TradingContext, symbols: List[str]) -> Dict:
+    """Process market data and generate trading signals"""
+    try:
+        signals = {}
+        for symbol in symbols:
+            market_data = await ctx.market_data.get_latest_candles(symbol)
+            if not ctx.market_validator.validate_data(market_data):
+                ctx.logger.warning(f"❌ Invalid market data for {symbol}")
                 continue
 
-            all_signals = []
-            for symbol, mdata in market_data_dict.items():
-                ml_signal = generate_ml_signals(mdata, ctx.ml_models)
-                ga_signal = generate_ga_signals(mdata)
-                signal_combined = combine_signals([ml_signal, ga_signal])
-                if validate_signal(signal_combined):
-                    signal_combined["symbol"] = symbol
-                    all_signals.append(signal_combined)
-                    ctx.logger.info(f"Signal generated for {symbol}: {signal_combined}")
+            ml_signal = await generate_ml_signals(market_data, ctx.ml_signal)
+            ga_signal = await generate_ga_signals(market_data, ctx.config["ga_settings"])
+            
+            equity = ctx.portfolio_manager.get_equity()
+            kelly_fraction = calculate_kelly_fraction(
+                ml_signal["win_rate"], 
+                ml_signal["profit_ratio"]
+            )
 
-            for signal_data in all_signals:
-                symbol = signal_data["symbol"]
-                mdata = market_data_dict[symbol]
-                params = calculate_position_params(signal_data, mdata, ctx)
-                position_size = params.get("position_size", 0)
-                if position_size > 0:
-                    order = await place_order(symbol, "buy", position_size, mdata["current_price"], ctx)
-                    if order:
-                        ctx.logger.info(f"Order placed for {symbol}: {order}")
-                        record_new_trade(order, ctx)
-                        stop_loss = params.get("stop_loss", mdata["current_price"] * 0.98)
-                        take_profit = params.get("take_profit", mdata["current_price"] * 1.03)
-                        added = ctx.risk_manager.add_position(symbol, "long", position_size, mdata["current_price"], stop_loss, take_profit)
-                        if not added:
-                            ctx.logger.error(f"Failed to add position for {symbol}")
-                    else:
-                        ctx.logger.error(f"Order placement failed for {symbol}")
-                else:
-                    ctx.logger.info(f"Position parameters invalid for signal on {symbol}.")
+            # Calculate position size (max 10% of equity)
+            max_position = equity * Decimal(str(ctx.config["max_position_pct"] / 100))
+            position_size = min(
+                calculate_position_size(
+                    equity,
+                    ctx.config["risk_factor"],
+                    kelly_fraction
+                ),
+                max_position
+            )
 
-            current_positions = list(ctx.risk_manager.positions.keys())
-            for symbol in current_positions:
-                current_price = await fetch_ticker(symbol, ctx)
-                if current_price <= 0:
+            entry_price = Decimal(str(market_data.iloc[-1]["close"]))
+            tp_price = entry_price * (1 + Decimal(str(ctx.config["take_profit_pct"] / 100)))
+            sl_price = entry_price * (1 - Decimal(str(ctx.config["stop_loss_pct"] / 100)))
+
+            signals[symbol] = {
+                "ml_signal": ml_signal,
+                "ga_signal": ga_signal,
+                "position_size": position_size,
+                "entry_price": entry_price,
+                "tp_price": tp_price,
+                "sl_price": sl_price,
+                "direction": "long" if ml_signal["prediction"] > ctx.config["ml_long_threshold"] else "short"
+            }
+
+            ctx.logger.info(
+                f"📊 {symbol} Signal Generated:\n"
+                f"Direction: {signals[symbol]['direction']}\n"
+                f"Position Size: {position_size:.4f}\n"
+                f"Entry: {entry_price:.2f}\n"
+                f"TP: {tp_price:.2f}\n"
+                f"SL: {sl_price:.2f}"
+            )
+
+        return signals
+
+    except Exception as e:
+        handle_error(e, "process_market_data", logger=ctx.logger)
+        return {}
+
+async def check_trade_closure(ctx: TradingContext, trade: Dict[str, Any]) -> Optional[str]:
+    """Determine if and why a trade should be closed"""
+    try:
+        current_price = await ctx.exchange_interface.fetch_ticker(trade["symbol"])
+        entry_time = datetime.strptime(trade["entry_time"], "%Y-%m-%d %H:%M:%S")
+        hours_open = (datetime.utcnow() - entry_time).total_seconds() / 3600
+
+        # Check max hold time
+        if hours_open >= ctx.config["max_hold_hours"]:
+            return "TO"
+
+        # Check stop loss
+        if trade["direction"] == "long" and current_price <= trade["sl_price"]:
+            return "SL"
+        elif trade["direction"] == "short" and current_price >= trade["sl_price"]:
+            return "SL"
+
+        # Check take profit
+        if trade["direction"] == "long" and current_price >= trade["tp_price"]:
+            return "TP"
+        elif trade["direction"] == "short" and current_price <= trade["tp_price"]:
+            return "TP"
+
+        # Check ratchet stop
+        ratchet_stop = ctx.ratchet_manager.get_stop_price(trade["id"])
+        if ratchet_stop and (
+            (trade["direction"] == "long" and current_price <= ratchet_stop) or
+            (trade["direction"] == "short" and current_price >= ratchet_stop)
+        ):
+            return "SP"
+
+        return None
+
+    except Exception as e:
+        handle_error(e, "check_trade_closure", logger=ctx.logger)
+        return None
+
+async def execute_trades(ctx: TradingContext, signals: Dict) -> None:
+    """Execute new trades based on signals"""
+    try:
+        if not ctx.config.get("allow_new_trades", True):
+            ctx.logger.info("🚫 New trades disabled - monitoring existing positions only")
+            return
+
+        for symbol, signal in signals.items():
+            if not await validate_signal(signal, ctx):
+                continue
+
+            if not ctx.risk_manager.check_position_limits(symbol, signal["position_size"]):
+                continue
+
+            ctx.logger.info(f"🎯 Placing {signal['direction']} order for {symbol}")
+            
+            order = await ctx.exchange_interface.place_order(
+                symbol=symbol,
+                side=signal["direction"],
+                amount=signal["position_size"],
+                price=None  # Market order
+            )
+
+            if order:
+                ctx.logger.info(f"✅ Order executed: {symbol} @ {order['price']}")
+                await ctx.ratchet_manager.initialize_trade(
+                    order["id"],
+                    float(order["price"]),
+                    signal["tp_price"],
+                    signal["sl_price"]
+                )
+
+    except Exception as e:
+        handle_error(e, "execute_trades", logger=ctx.logger)
+
+async def manage_positions(ctx: TradingContext) -> None:
+    """Manage open positions"""
+    try:
+        open_trades = await ctx.portfolio_manager.get_open_trades()
+        
+        for trade in open_trades:
+            close_reason = await check_trade_closure(ctx, trade)
+            
+            if close_reason:
+                ctx.logger.info(
+                    f"🔒 Closing trade {trade['symbol']} - Reason: {close_reason}"
+                )
+                
+                result = await ctx.exchange_interface.close_position(trade)
+                if result:
+                    await ctx.portfolio_manager.record_trade_closure(
+                        trade["id"], 
+                        close_reason,
+                        await ctx.exchange_interface.fetch_ticker(trade["symbol"])
+                    )
+
+    except Exception as e:
+        handle_error(e, "manage_positions", logger=ctx.logger)
+
+async def main_loop(ctx: TradingContext) -> None:
+    """Main trading loop"""
+    ctx.logger.info(
+        f"🚀 Starting trading bot\n"
+        f"Mode: {'PAPER' if ctx.config['paper_mode'] else 'LIVE'}\n"
+        f"Exchanges: {', '.join(ctx.config['exchanges'])}\n"
+        f"Trading Fees: {ctx.config['trading_fees']*100:.2f}%\n"
+        f"Slippage: {ctx.config['slippage']*100:.2f}%\n"
+        f"Max Position: {ctx.config['max_position_pct']}% of equity\n"
+        f"Take Profit: {ctx.config['take_profit_pct']}%"
+    )
+
+    while ctx.running:
+        try:
+            current_time = time.time()
+            
+            # Health check
+            if current_time - ctx.last_health_check >= 30:
+                health_status = await ctx.health_monitor.check_system_health()
+                if not health_status:
+                    ctx.logger.error("🔴 System health check failed")
+                    if health_status.get("critical", False):
+                        ctx.circuit_breaker.trigger("Critical health check failure")
+                    await asyncio.sleep(30)
                     continue
-                exit_decision = ctx.risk_manager.update_position(symbol, current_price)
-                if exit_decision and exit_decision.get("action") == "close":
-                    reason = exit_decision.get("reason")
-                    if await close_position(ctx.risk_manager.positions[symbol], ctx):
-                        trade_record = ctx.risk_manager.close_position(symbol, current_price, reason)
-                        if trade_record:
-                            update_trade_result(trade_record, ctx)
-                            ctx.logger.info(f"Closed position for {symbol}. Reason: {reason}")
-                        else:
-                            ctx.logger.error(f"Failed to log closed position for {symbol}")
-                    else:
-                        ctx.logger.error(f"Close order failed for {symbol}")
+                ctx.last_health_check = current_time
 
-            asyncio.create_task(ctx.ratchet_manager.monitor_trades(ctx.exchange))
-            update_daily_performance(ctx)
-            log_performance_summary(ctx)
-            await asyncio.sleep(ctx.config.get("trading_loop_interval", 5))
+            # Process market data and execute trades
+            symbols = ctx.config["market_list"]
+            signals = await process_market_data(ctx, symbols)
+            
+            if ctx.circuit_breaker.state == CircuitBreakerState.OPEN:
+                ctx.logger.warning(f"⚡ Circuit breaker active")
+                await asyncio.sleep(60)
+                continue
+
+            await execute_trades(ctx, signals)
+            await manage_positions(ctx)
+
+            # Performance logging
+            if current_time - ctx.last_metrics_update >= 300:
+                equity = ctx.portfolio_manager.get_equity()
+                open_positions = len(await ctx.portfolio_manager.get_open_trades())
+                daily_pnl = ctx.portfolio_manager.get_daily_pnl()
+                
+                ctx.logger.info(
+                    f"📈 Performance Update:\n"
+                    f"Equity: {equity:.2f} USDT\n"
+                    f"Daily PnL: {daily_pnl:+.2%}\n"
+                    f"Open Positions: {open_positions}"
+                )
+                ctx.last_metrics_update = current_time
+
+            await asyncio.sleep(ctx.config["execution_interval"])
+
         except Exception as e:
-            ctx.logger.error(f"Error in trading loop: {e}")
-            await asyncio.sleep(5)
+            handle_error(e, "main_loop", logger=ctx.logger)
+            await asyncio.sleep(10)
 
-async def shutdown_bot(ctx: TradingContext) -> None:
-    ctx.logger.info("Shutting down …")
+def main():
+    """Entry point"""
+    ctx = TradingContext()
+    
     try:
-        if ctx.exchange:
-            await ctx.exchange.close()
-        ctx.logger.info("Exchange connection closed.")
-    except Exception as e:
-        ctx.logger.error(f"Error during shutdown: {e}")
-
-async def initialize_and_run() -> None:
-    ctx: Optional[TradingContext] = None
-    try:
-        logger = logging.getLogger("TradingBot")
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-        config = load_config()
-        db_pool = config.get("db_path", "data/trading.db")
-        ctx = TradingContext(config=config, logger=logger, db_pool=db_pool)
-        ctx.running = True
-
-        ctx.market_data = MarketData(ctx)
-        ctx.exchange = await create_exchange(ctx)
-        ctx.risk_manager = RiskManager(ctx)
-        ctx.ratchet_manager = RatchetManager(ctx)
-        safe_load_ml_models(ctx)
-
-        if not validate_account({}, ctx):
-            logger.warning("Account validation failed on startup.")
-
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: setattr(ctx, "running", False))
-
-        await main_loop(ctx)
-    except Exception as e:
-        if ctx and ctx.logger:
-            ctx.logger.error(f"Bot initialization failed: {e}")
-        else:
-            print(f"Bot initialization failed: {e}")
-        raise
-    finally:
-        if ctx:
-            await shutdown_bot(ctx)
-
-def main() -> None:
-    try:
-        asyncio.run(initialize_and_run())
+        asyncio.run(main_loop(ctx))
     except KeyboardInterrupt:
-        print("\nShutting down gracefully…")
-    except Exception as e:
-        print(f"\nFatal error: {e}")
-        sys.exit(1)
+        ctx.logger.info("👋 Shutting down gracefully...")
+        ctx.running = False
+    finally:
+        asyncio.run(ctx.exchange_interface.close())
+        ctx.logger.info("✨ Bot shutdown complete")
 
 if __name__ == "__main__":
     main()

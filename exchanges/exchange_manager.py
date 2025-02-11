@@ -1,114 +1,203 @@
 #!/usr/bin/env python3
 """
 Module: exchanges/exchange_manager.py
+Manages exchange connections and operations with proper error handling
 """
+
 import logging
-import ccxt.async_support as ccxt  # if using async ccxt
-# or import ccxt if synchronous
+import asyncio
+from typing import Dict, Any, Optional, List, Tuple
+from decimal import Decimal
+import ccxt.async_support as ccxt
+from datetime import datetime, timedelta
 
-async def select_exchange(symbol: str, ctx) -> object:
-    """
-    Returns an instantiated exchange object, 
-    configured with API keys from ctx.config, 
-    ignoring ctx.env entirely.
-    """
-    exchange_name = ctx.config.get("primary_exchange", "kucoin")
+from database.database import DBConnection, execute_sql
+from utils.error_handler import handle_error
 
-    # If you want different logic for different symbols, do it here
-    if exchange_name.lower() == "kucoin":
-        return await _get_kucoin_exchange(ctx)
-    # elif exchange_name.lower() == "bybit":
-    #     return await _get_bybit_exchange(ctx)
-    # etc.
+class ExchangeManager:
+    def __init__(self, ctx: Any):
+        self.ctx = ctx
+        self.logger = ctx.logger or logging.getLogger(__name__)
+        self.exchange_instances: Dict[str, ccxt.Exchange] = {}
+        self.last_rate_reset = datetime.now()
+        self.request_count = 0
+        self.rate_limit = ctx.config.get("rate_limit_per_second", 5)
 
-    ctx.logger.error(f"select_exchange => unknown exchange '{exchange_name}'")
-    return None
+    async def get_exchange(self, exchange_id: str = None) -> Optional[ccxt.Exchange]:
+        """Get or create exchange instance with rate limiting"""
+        try:
+            if not exchange_id:
+                exchange_id = self.ctx.config.get("primary_exchange", "kucoin")
 
+            if exchange_id in self.exchange_instances:
+                return self.exchange_instances[exchange_id]
 
-async def _get_kucoin_exchange(ctx):
-    """
-    Creates a ccxt kucoin instance using config-based credentials,
-    ignoring any 'env' references.
-    """
-    api_key     = ctx.config.get("kucoin_api_key", "")
-    secret      = ctx.config.get("kucoin_secret", "")
-    password    = ctx.config.get("kucoin_password", "")
+            # Rate limit check
+            now = datetime.now()
+            if (now - self.last_rate_reset).total_seconds() >= 1.0:
+                self.request_count = 0
+                self.last_rate_reset = now
+            
+            if self.request_count >= self.rate_limit:
+                await asyncio.sleep(1.0)
+                self.request_count = 0
+                self.last_rate_reset = datetime.now()
 
-    if not api_key or not secret or not password:
-        ctx.logger.warning("KuCoin API credentials missing or empty in config.")
+            exchange = await self._create_exchange(exchange_id)
+            if not exchange:
+                return None
 
-    exchange = ccxt.kucoin({
-        "apiKey": api_key,
-        "secret": secret,
-        "password": password,
-        "enableRateLimit": True
-    })
+            self.exchange_instances[exchange_id] = exchange
+            return exchange
 
-    # load markets if needed
-    await exchange.load_markets()
-    return exchange
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager.get_exchange({exchange_id})", 
+                        logger=self.logger)
+            return None
 
+    async def _create_exchange(self, exchange_id: str) -> Optional[ccxt.Exchange]:
+        """Create new exchange instance with credentials"""
+        try:
+            credentials = {
+                "apiKey": self.ctx.config.get(f"{exchange_id}_api_key", ""),
+                "secret": self.ctx.config.get(f"{exchange_id}_secret", ""),
+                "password": self.ctx.config.get(f"{exchange_id}_password", ""),
+                "enableRateLimit": True
+            }
 
-async def fetch_ticker(symbol: str, ctx) -> float:
-    """
-    Fetch the last price (ticker) for 'symbol' 
-    from whichever exchange is configured.
-    Return -1 if there's an error, 
-    so the bot can skip the trade.
-    """
-    try:
-        exch = await select_exchange(symbol, ctx)
-        if not exch:
-            return -1
-        ticker_data = await exch.fetch_ticker(symbol)
-        if not ticker_data:
-            return -1
-        last_price = ticker_data.get("last") or ticker_data.get("close") or -1
-        return last_price
-    except Exception as e:
-        ctx.logger.error(f"Error in ExchangeManager.fetch_ticker for {symbol}: {e}")
-        return -1
+            if not credentials["apiKey"] or not credentials["secret"]:
+                self.logger.error(f"Missing API credentials for {exchange_id}")
+                return None
 
+            exchange_class = getattr(ccxt, exchange_id)
+            exchange = exchange_class(credentials)
+            await exchange.load_markets()
+            return exchange
 
-async def place_order(exchange, symbol, side, amount, price, ctx):
-    """
-    Basic example of placing a limit order 
-    with ccxt (async). Adjust as needed.
-    """
-    try:
-        params = {}
-        # For KuCoin spot: might need "type": "market" or "limit"
-        # or other param if you want reduce_only, etc.
-        order_type = ctx.config.get("order_type", "limit")
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager._create_exchange({exchange_id})", 
+                        logger=self.logger)
+            return None
 
-        if order_type == "market":
-            # place a market order
-            order = await exchange.create_market_order(symbol, side, amount, None, params)
-        else:
-            # place a limit order
-            order = await exchange.create_limit_order(symbol, side, amount, price, params)
+    async def fetch_ticker(self, symbol: str, exchange_id: str = None) -> Optional[Dict[str, Any]]:
+        """Fetch current ticker with error handling and rate limiting"""
+        try:
+            exchange = await self.get_exchange(exchange_id)
+            if not exchange:
+                return None
 
-        return {
-            "id": order.get("id", ""),
-            "symbol": symbol,
-            "direction": side,
-            "price": price,
-            "amount": amount,
-            "timestamp": order.get("timestamp")
-        }
-    except Exception as e:
-        ctx.logger.error(f"Error in ExchangeManager.place_order => {symbol}, side={side}, e={e}")
-        return None
+            self.request_count += 1
+            ticker = await exchange.fetch_ticker(symbol)
+            if not ticker:
+                return None
 
+            return {
+                "symbol": symbol,
+                "last": Decimal(str(ticker.get("last", 0))),
+                "bid": Decimal(str(ticker.get("bid", 0))),
+                "ask": Decimal(str(ticker.get("ask", 0))),
+                "volume": Decimal(str(ticker.get("baseVolume", 0))),
+                "timestamp": ticker.get("timestamp", 0)
+            }
 
-async def close_order(exchange, trade_id: str, price: float, ctx):
-    """
-    Example. If you must cancel + place an opposite side 
-    or something else, do it here.
-    """
-    # There's no universal "close_order" in spot 
-    # unless you're doing margin or futures with ccxt.
-    # For demonstration:
-    ctx.logger.info(f"Close order => trade_id={trade_id}, price={price}")
-    # do real logic if on futures, e.g. create opposite order to close short/long
-    return
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager.fetch_ticker({symbol})", 
+                        logger=self.logger)
+            return None
+
+    async def place_order(
+        self,
+        symbol: str,
+        order_type: str,
+        side: str,
+        amount: Decimal,
+        price: Optional[Decimal] = None,
+        exchange_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Place order with comprehensive error handling"""
+        try:
+            exchange = await self.get_exchange(exchange_id)
+            if not exchange:
+                return None
+
+            self.request_count += 1
+            params = {}
+            
+            if order_type == "market":
+                order = await exchange.create_market_order(
+                    symbol, side, float(amount), None, params
+                )
+            else:
+                if not price:
+                    self.logger.error(f"Price required for limit order: {symbol}")
+                    return None
+                order = await exchange.create_limit_order(
+                    symbol, side, float(amount), float(price), params
+                )
+
+            return {
+                "id": order.get("id", ""),
+                "symbol": symbol,
+                "type": order_type,
+                "side": side,
+                "price": Decimal(str(order.get("price", 0))),
+                "amount": Decimal(str(order.get("amount", 0))),
+                "filled": Decimal(str(order.get("filled", 0))),
+                "status": order.get("status", "unknown"),
+                "timestamp": order.get("timestamp", 0)
+            }
+
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager.place_order({symbol})", 
+                        logger=self.logger)
+            return None
+
+    async def cancel_order(
+        self,
+        order_id: str,
+        symbol: str,
+        exchange_id: str = None
+    ) -> bool:
+        """Cancel order with error handling"""
+        try:
+            exchange = await self.get_exchange(exchange_id)
+            if not exchange:
+                return False
+
+            self.request_count += 1
+            await exchange.cancel_order(order_id, symbol)
+            return True
+
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager.cancel_order({order_id})", 
+                        logger=self.logger)
+            return False
+
+    async def fetch_balance(self, exchange_id: str = None) -> Optional[Dict[str, Decimal]]:
+        """Fetch account balance with error handling"""
+        try:
+            exchange = await self.get_exchange(exchange_id)
+            if not exchange:
+                return None
+
+            self.request_count += 1
+            balance = await exchange.fetch_balance()
+            
+            return {
+                currency: Decimal(str(data.get("free", 0)))
+                for currency, data in balance.get("total", {}).items()
+                if data.get("free", 0) > 0
+            }
+
+        except Exception as e:
+            handle_error(e, context=f"ExchangeManager.fetch_balance", 
+                        logger=self.logger)
+            return None
+
+    async def close(self):
+        """Properly close all exchange connections"""
+        for exchange in self.exchange_instances.values():
+            try:
+                await exchange.close()
+            except Exception as e:
+                self.logger.error(f"Error closing exchange: {str(e)}")

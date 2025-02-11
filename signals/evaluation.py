@@ -3,8 +3,10 @@
 signals/evaluation.py - Strategy evaluation and metrics calculation
 """
 import numpy as np
+from decimal import Decimal
+from typing import Dict, Any, List, Optional, Tuple
 import logging
-from typing import Dict, Any, List, Optional
+
 from utils.error_handler import handle_error
 from trading.math import (
     predict_next_return,
@@ -46,43 +48,15 @@ def evaluate_condition(condition: Dict[str, Any], data: Dict[str, Any]) -> bool:
             
         return False
         
-    except Exception:
+    except Exception as e:
+        handle_error(e, "evaluation.evaluate_condition", logger=None)
         return False
 
-def evaluate_rule(rule: TradingRule, data: Dict[str, Any], market_state: MarketState) -> str:
-    """Evaluate trading rule and return signal direction"""
+def evaluate_rule(rule: TradingRule, data: Dict[str, Any], market_state: MarketState) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Evaluate trading rule and return signal direction with metadata"""
     try:
         if not rule or not data or not market_state:
-            return ""
-            
-        # Check buy conditions
-        buy_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.buy_conditions
-        )
-        
-        # Check sell conditions
-        sell_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.sell_conditions
-        )
-        
-        # Return signal immediately based on conditions
-        if buy_signal:
-            return "long"
-        elif sell_signal and market_state.ctx.config.get("ga_settings", {}).get("allow_shorts", False):
-            return "short"
-            
-        return ""
-        
-    except Exception as e:
-        logger = market_state.ctx.logger if hasattr(market_state, 'ctx') else logging.getLogger()
-        handle_error(e, "evaluation.evaluate_rule", logger=logger)
-        return ""
-    """Evaluate trading rule and return signal direction"""
-    try:
-        if not rule or not data or not market_state:
-            return ""
+            return "", None
             
         # Check buy conditions
         buy_signal = all(
@@ -99,7 +73,7 @@ def evaluate_rule(rule: TradingRule, data: Dict[str, Any], market_state: MarketS
             )
         
         if not (buy_signal or sell_signal):
-            return ""
+            return "", None
             
         # Validate with prediction
         predicted_return = predict_next_return(
@@ -107,236 +81,131 @@ def evaluate_rule(rule: TradingRule, data: Dict[str, Any], market_state: MarketS
             market_state.ar1_coef
         )
         
-        if buy_signal and predicted_return > 0:
-            return "long"
-        elif sell_signal and predicted_return < 0:
-            return "short"
-            
-        return ""
-        
-    except Exception as e:
-        # Use market_state's logger if available, otherwise create a default one
-        logger = market_state.ctx.logger if hasattr(market_state, 'ctx') else logging.getLogger()
-        handle_error(e, "evaluation.evaluate_rule", logger=logger)
-        return ""
-    """Evaluate trading rule and return signal direction"""
-    try:
-        if not rule or not data or not market_state:
-            return ""
-            
-        # Check buy conditions
-        buy_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.buy_conditions
+        # Calculate signal probability and expected value
+        probability = calculate_trend_probability(
+            predicted_return,
+            market_state.volatility
         )
         
-        # Check sell conditions only if shorts are enabled
-        sell_signal = False
-        if market_state.ctx.config.get("ga_settings", {}).get("allow_shorts", False):
-            sell_signal = all(
-                evaluate_condition(cond, data)
-                for cond in rule.sell_conditions
-            )
-        
-        if not (buy_signal or sell_signal):
-            return ""
-            
-        # Validate with prediction
-        predicted_return = predict_next_return(
-            market_state.current_return,
-            market_state.ar1_coef
+        ev = calculate_expected_value(
+            probability,
+            predicted_return,
+            market_state.volatility
         )
         
+        # Calculate Kelly fraction for position sizing
+        kelly = calculate_kelly_fraction(probability, predicted_return)
+        
+        signal_metadata = {
+            "probability": probability,
+            "expected_value": ev,
+            "kelly_fraction": kelly,
+            "predicted_return": predicted_return
+        }
+        
         if buy_signal and predicted_return > 0:
-            return "long"
+            return "long", signal_metadata
         elif sell_signal and predicted_return < 0:
-            return "short"
+            return "short", signal_metadata
             
-        return ""
+        return "", None
         
     except Exception as e:
         handle_error(e, "evaluation.evaluate_rule", logger=None)
-        return ""
-    """Evaluate trading rule and return signal direction"""
-    try:
-        if not rule or not data or not market_state:
-            return ""
-            
-        # Check buy conditions
-        buy_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.buy_conditions
-        )
-        
-        # Check sell conditions only if shorts are enabled
-        sell_signal = False
-        if market_state.ctx.config.get("ga_settings", {}).get("allow_shorts", False):
-            sell_signal = all(
-                evaluate_condition(cond, data)
-                for cond in rule.sell_conditions
-            )
-        
-        if not (buy_signal or sell_signal):
-            return ""
-            
-        # Validate with prediction
-        predicted_return = predict_next_return(
-            market_state.current_return,
-            market_state.ar1_coef
-        )
-        
-        if buy_signal and predicted_return > 0:
-            return "long"
-        elif sell_signal and predicted_return < 0:
-            return "short"
-            
-        return ""
-        
-    except Exception as e:
-        handle_error(e, "evaluation.evaluate_rule", logger=None)
-        return ""
-    
-    
-    """Evaluate trading rule and return signal direction"""
-    try:
-        if not rule or not data or not market_state:
-            return ""
-            
-        # Check buy conditions
-        buy_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.buy_conditions
-        )
-        
-        # Check sell conditions
-        sell_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.sell_conditions
-        )
-        
-        if not (buy_signal or sell_signal):
-            return ""
-            
-        # Validate with prediction
-        predicted_return = predict_next_return(
-            market_state.current_return,
-            market_state.ar1_coef
-        )
-        
-        if buy_signal and predicted_return > 0:
-            return "long"
-        elif sell_signal and predicted_return < 0:
-            return "short"
-            
-        return ""
-        
-    except Exception as e:
-        # Get logger from context if available
-        logger = logging.getLogger("TradingBot")
-        handle_error(e, "evaluation.evaluate_rule", logger=logger)
-        return ""
-    
-    """Evaluate trading rule and return signal direction"""
-    try:
-        if not rule or not data or not market_state:
-            return ""
-            
-        # Check buy conditions
-        buy_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.buy_conditions
-        )
-        
-        # Check sell conditions
-        sell_signal = all(
-            evaluate_condition(cond, data)
-            for cond in rule.sell_conditions
-        )
-        
-        if not (buy_signal or sell_signal):
-            return ""
-            
-        # Validate with prediction
-        predicted_return = predict_next_return(
-            market_state.current_return,
-            market_state.ar1_coef
-        )
-        
-        if buy_signal and predicted_return > 0:
-            return "long"
-        elif sell_signal and predicted_return < 0:
-            return "short"
-            
-        return ""
-        
-    except Exception as e:
-        handle_error(e, "evaluation.evaluate_rule", logger=None)
-        return ""
+        return "", None
 
 def calculate_metrics(trades: List[Dict[str, Any]]) -> TradeMetrics:
     """Calculate comprehensive trading metrics"""
-    if not trades:
+    try:
+        if not trades:
+            return TradeMetrics()
+        
+        returns = [Decimal(str(t.get('return', 0))) for t in trades]
+        kelly_fracs = [Decimal(str(t.get('kelly_fraction', 0))) for t in trades]
+        position_sizes = [Decimal(str(t.get('position_size', 0))) for t in trades]
+        
+        winning_trades = sum(1 for r in returns if r > 0)
+        
+        return TradeMetrics(
+            win_rate=Decimal(str(winning_trades)) / Decimal(str(len(trades))),
+            profit_factor=_calculate_profit_factor(returns),
+            sharpe_ratio=_calculate_sharpe_ratio(returns),
+            max_drawdown=_calculate_max_drawdown(returns),
+            exposure_ratio=_calculate_exposure_ratio(trades),
+            avg_trade_return=Decimal(str(np.mean([float(r) for r in returns]))),
+            total_trades=len(trades),
+            consecutive_losses=_calculate_max_consecutive_losses(returns),
+            kelly_fraction=Decimal(str(np.mean([float(k) for k in kelly_fracs]))) if kelly_fracs else Decimal(0),
+            avg_leverage=Decimal(str(np.mean([float(p) for p in position_sizes]))) if position_sizes else Decimal(0)
+        )
+        
+    except Exception as e:
+        handle_error(e, "evaluation.calculate_metrics", logger=None)
         return TradeMetrics()
-    
-    returns = [t.get('return', 0) for t in trades]
-    kelly_fracs = [t.get('kelly_fraction', 0) for t in trades]
-    position_sizes = [t.get('position_size', 0) for t in trades]
-    
-    winning_trades = sum(1 for r in returns if r > 0)
-    
-    return TradeMetrics(
-        win_rate=winning_trades / len(trades),
-        profit_factor=_calculate_profit_factor(returns),
-        sharpe_ratio=_calculate_sharpe_ratio(returns),
-        max_drawdown=_calculate_max_drawdown(returns),
-        exposure_ratio=_calculate_exposure_ratio(trades),
-        avg_trade_return=np.mean(returns),
-        total_trades=len(trades),
-        consecutive_losses=_calculate_max_consecutive_losses(returns),
-        kelly_fraction=np.mean(kelly_fracs) if kelly_fracs else 0,
-        avg_leverage=np.mean(position_sizes) if position_sizes else 0
-    )
 
-def _calculate_profit_factor(returns: List[float]) -> float:
-    """Calculate ratio of gross profits to gross losses"""
-    if not returns:
-        return 0.0
-    gross_profit = sum(r for r in returns if r > 0)
-    gross_loss = abs(sum(r for r in returns if r < 0))
-    return gross_profit / gross_loss if gross_loss > 0 else 0.0
+def _calculate_profit_factor(returns: List[Decimal]) -> Decimal:
+    """Calculate profit factor with proper decimal handling"""
+    try:
+        wins = sum((r for r in returns if r > 0), Decimal(0))
+        losses = abs(sum((r for r in returns if r < 0), Decimal(0)))
+        return wins / losses if losses != 0 else Decimal(0)
+    except Exception:
+        return Decimal(0)
 
-def _calculate_sharpe_ratio(returns: List[float]) -> float:
-    """Calculate annualized Sharpe ratio"""
-    if not returns:
-        return 0.0
-    return np.mean(returns) / (np.std(returns) + 1e-10) * np.sqrt(252)
+def _calculate_sharpe_ratio(returns: List[Decimal]) -> Decimal:
+    """Calculate Sharpe ratio with proper decimal handling"""
+    try:
+        if not returns:
+            return Decimal(0)
+        returns_float = [float(r) for r in returns]
+        return Decimal(str(np.mean(returns_float) / np.std(returns_float) if np.std(returns_float) != 0 else 0))
+    except Exception:
+        return Decimal(0)
 
-def _calculate_max_drawdown(returns: List[float]) -> float:
-    """Calculate maximum drawdown percentage"""
-    if not returns:
-        return 0.0
-    cumulative = np.cumprod(1 + np.array(returns))
-    running_max = np.maximum.accumulate(cumulative)
-    drawdowns = (running_max - cumulative) / running_max
-    return float(np.max(drawdowns))
+def _calculate_max_drawdown(returns: List[Decimal]) -> Decimal:
+    """Calculate maximum drawdown with proper decimal handling"""
+    try:
+        cumulative = np.cumsum([float(r) for r in returns])
+        max_dd = 0
+        peak = cumulative[0]
+        
+        for value in cumulative[1:]:
+            if value > peak:
+                peak = value
+            dd = (peak - value) / peak if peak != 0 else 0
+            max_dd = max(max_dd, dd)
+            
+        return Decimal(str(max_dd))
+    except Exception:
+        return Decimal(0)
 
-def _calculate_exposure_ratio(trades: List[Dict[str, Any]]) -> float:
-    """Calculate ratio of time in market"""
-    if not trades:
-        return 0.0
-    total_bars = sum(t.get('hold_periods', 0) for t in trades)
-    return total_bars / len(trades)
+def _calculate_exposure_ratio(trades: List[Dict[str, Any]]) -> Decimal:
+    """Calculate market exposure ratio"""
+    try:
+        total_duration = sum(
+            float(t.get('exit_time', 0)) - float(t.get('entry_time', 0))
+            for t in trades
+        )
+        if not trades:
+            return Decimal(0)
+        total_time = float(trades[-1].get('exit_time', 0)) - float(trades[0].get('entry_time', 0))
+        return Decimal(str(total_duration / total_time if total_time > 0 else 0))
+    except Exception:
+        return Decimal(0)
 
-def _calculate_max_consecutive_losses(returns: List[float]) -> int:
-    """Calculate maximum consecutive losing trades"""
-    current = maximum = 0
-    for r in returns:
-        if r < 0:
-            current += 1
-            maximum = max(maximum, current)
-        else:
-            current = 0
-    return maximum
+def _calculate_max_consecutive_losses(returns: List[Decimal]) -> int:
+    """Calculate maximum consecutive losses"""
+    try:
+        max_losses = current_losses = 0
+        for r in returns:
+            if r < 0:
+                current_losses += 1
+                max_losses = max(max_losses, current_losses)
+            else:
+                current_losses = 0
+        return max_losses
+    except Exception:
+        return 0
 
 def calculate_fitness(metrics: TradeMetrics, ctx: Any) -> float:
     """Calculate overall strategy fitness score"""
@@ -391,20 +260,13 @@ def simulate_rule(
             
             if position is None:
                 # Check for entry
-                signal = evaluate_rule(rule, candle, market_state)
+                signal, metadata = evaluate_rule(rule, candle, market_state)
                 
                 if signal:
                     # Calculate signal parameters
-                    predicted_return = predict_next_return(
-                        market_state.current_return,
-                        market_state.ar1_coef
-                    )
+                    predicted_return = metadata["predicted_return"]
                     
-                    trend_prob = calculate_trend_probability(
-                        predicted_return,
-                        candle.get("EMA_8", 0),
-                        candle.get("EMA_21", 0)
-                    )
+                    trend_prob = metadata["probability"]
                     
                     ev, win_target, loss_target = calculate_expected_value(
                         candle["close"],
@@ -415,11 +277,7 @@ def simulate_rule(
                     )
                     
                     if ev > 0:
-                        kelly_frac = calculate_kelly_fraction(
-                            trend_prob,
-                            win_target,
-                            loss_target
-                        )
+                        kelly_frac = metadata["kelly_fraction"]
                         
                         position = signal
                         trades.append({
