@@ -10,10 +10,12 @@ from typing import Dict, Any, List, Optional, Tuple
 import time
 import threading
 from datetime import datetime, timedelta
+import asyncio
 
 from utils.error_handler import handle_error
 from .position import Position
 from .limits import RiskLimits
+from utils.numeric import NumericHandler
 
 @dataclass
 class PortfolioStats:
@@ -29,9 +31,10 @@ class PortfolioStats:
     position_count: int
 
 class PortfolioManager:
-    def __init__(self, risk_limits: RiskLimits):
+    def __init__(self, risk_limits: Any):
+        self.nh = NumericHandler()
         self.risk_limits = risk_limits
-        self.positions: Dict[str, Position] = {}
+        self.positions: Dict[str, Dict] = {}
         self.balance = Decimal(0)
         self.peak_balance = Decimal(0)
         self.daily_starting_balance = Decimal(0)
@@ -41,6 +44,10 @@ class PortfolioManager:
         self._update_interval: float = 0.1  # 100ms
         self.lock = threading.Lock()
         self._last_daily_reset = datetime.now().date()
+        self._lock = asyncio.Lock()
+        self._last_value = Decimal('0')
+        self._high_water_mark = Decimal('0')
+        self._position_updates: List[Dict] = []
         
     def calculate_portfolio_value(self) -> Decimal:
         """Calculate total portfolio value including unrealized PnL"""
@@ -49,7 +56,7 @@ class PortfolioManager:
             if now - self._last_update >= self._update_interval:
                 with self.lock:
                     self._portfolio_value = self.balance + sum(
-                        pos.unrealized_pnl for pos in self.positions.values()
+                        pos['size'] * pos['current_price'] for pos in self.positions.values()
                     )
                     if self._portfolio_value > self.peak_balance:
                         self.peak_balance = self._portfolio_value
@@ -84,9 +91,9 @@ class PortfolioManager:
         try:
             with self.lock:
                 total_value = self.calculate_portfolio_value()
-                unrealized_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
+                unrealized_pnl = sum(pos['size'] * pos['current_price'] for pos in self.positions.values())
                 total_exposure = sum(
-                    pos.size * pos.current_price for pos in self.positions.values()
+                    pos['size'] * pos['current_price'] for pos in self.positions.values()
                 )
                 leverage = total_exposure / total_value if total_value > 0 else Decimal(0)
                 daily_pnl = total_value - self.daily_starting_balance
@@ -117,26 +124,80 @@ class PortfolioManager:
                 position_count=0
             )
 
-    def add_position(self, position: Position) -> bool:
-        """Add new position with validation"""
-        try:
-            with self.lock:
+    async def add_position(self, 
+                          symbol: str, 
+                          size: Decimal, 
+                          entry_price: Decimal) -> bool:
+        """Add new position with thread safety"""
+        async with self._lock:
+            try:
                 # Validate against risk limits
                 if len(self.positions) >= self.risk_limits.max_positions:
                     return False
                     
-                position_value = position.size * position.current_price
-                portfolio_value = self.calculate_portfolio_value()
+                position_value = size * entry_price
+                total_value = await self.get_total_value()
                 
-                if position_value / portfolio_value > self.risk_limits.max_position_size:
+                if position_value / total_value > self.risk_limits.max_position_size:
                     return False
-                    
-                self.positions[position.symbol] = position
+                
+                self.positions[symbol] = {
+                    'size': self.nh.to_decimal(size),
+                    'entry_price': self.nh.to_decimal(entry_price),
+                    'current_price': self.nh.to_decimal(entry_price),
+                    'unrealized_pnl': Decimal('0'),
+                    'last_update': datetime.utcnow()
+                }
+                
+                await self._update_portfolio_metrics()
                 return True
                 
-        except Exception as e:
-            handle_error(e, "PortfolioManager.add_position", logger=None)
-            return False
+            except Exception as e:
+                self.logger.error(f"Failed to add position: {e}")
+                return False
+                
+    async def update_position(self, 
+                            symbol: str, 
+                            current_price: Decimal) -> None:
+        """Update position with new price data"""
+        async with self._lock:
+            if symbol not in self.positions:
+                return
+                
+            position = self.positions[symbol]
+            old_price = position['current_price']
+            new_price = self.nh.to_decimal(current_price)
+            
+            # Update position metrics
+            position['current_price'] = new_price
+            position['unrealized_pnl'] = (
+                position['size'] * (new_price - position['entry_price'])
+            )
+            position['last_update'] = datetime.utcnow()
+            
+            # Record update for analysis
+            self._position_updates.append({
+                'symbol': symbol,
+                'timestamp': datetime.utcnow(),
+                'price_change': new_price - old_price,
+                'unrealized_pnl': position['unrealized_pnl']
+            })
+            
+            await self._update_portfolio_metrics()
+            
+    async def get_total_value(self) -> Decimal:
+        """Get current portfolio value"""
+        async with self._lock:
+            total = Decimal('0')
+            for pos in self.positions.values():
+                total += pos['size'] * pos['current_price']
+            return total
+            
+    async def _update_portfolio_metrics(self) -> None:
+        """Update portfolio-wide metrics"""
+        current_value = await self.get_total_value()
+        self._last_value = current_value
+        self._high_water_mark = max(self._high_water_mark, current_value)
 
     def close_position(self, symbol: str, exit_price: Decimal) -> Optional[Position]:
         """Close position and update realized PnL"""

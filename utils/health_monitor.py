@@ -14,7 +14,9 @@ import numpy as np
 from dataclasses import dataclass, field
 import logging
 from decimal import Decimal
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
+from utils.numeric import NumericHandler
+from collections import deque
 
 @dataclass
 class ComponentHealth:
@@ -39,6 +41,24 @@ class HealthMonitor:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.logger = ctx.logger or logging.getLogger(__name__)
+        self.nh = NumericHandler()
+        self._component_lock = asyncio.Lock()
+        self._db_lock = asyncio.Lock()
+        self._metric_lock = asyncio.Lock()
+        
+        # Use deque for fixed-size history
+        self.latency_history: Dict[str, deque] = {}
+        self.max_history = 1000
+        
+        self.status = {
+            'system': True,
+            'database': True,
+            'exchange': True,
+            'market_data': True
+        }
+        self.last_check = {}
+        self.error_counts: Dict[str, int] = {}
+        self.check_interval = 60  # seconds
         
         # Initialize status
         self.status = HealthStatus(
@@ -61,7 +81,6 @@ class HealthMonitor:
         }
         
         # Performance tracking
-        self.latency_history: Dict[str, List[float]] = {}
         self.error_window = timedelta(minutes=5)
         self.degradation_threshold = Decimal("2.0")  # 2x baseline is considered degraded
         
@@ -75,7 +94,123 @@ class HealthMonitor:
         }
         
         # Start monitoring
-        asyncio.create_task(self.monitor_loop())
+        asyncio.create_task(self.start_monitoring())
+
+    async def start_monitoring(self):
+        """Start the health monitoring loop with proper error handling"""
+        while True:
+            try:
+                async with self._component_lock:
+                    await self.check_system_health()
+                await asyncio.sleep(self.check_interval)
+            except Exception as e:
+                await handle_error_async(e, "HealthMonitor.start_monitoring", self.logger)
+                await asyncio.sleep(5)  # Back off on error
+
+    async def check_system_health(self) -> Dict[str, bool]:
+        """Comprehensive system health check"""
+        async with self._component_lock:
+            try:
+                # System resources check
+                system_ok = await self._check_system_resources()
+                
+                # Database connection check
+                db_ok = await self._check_database()
+                
+                # Exchange connection check
+                exchange_ok = await self._check_exchange()
+                
+                # Market data freshness check
+                market_data_ok = await self._check_market_data()
+                
+                self.status.update({
+                    'system': system_ok,
+                    'database': db_ok,
+                    'exchange': exchange_ok,
+                    'market_data': market_data_ok
+                })
+                
+                self.last_check = datetime.utcnow()
+                return self.status
+                
+            except Exception as e:
+                self.ctx.logger.error(f"Health check failed: {e}")
+                return {k: False for k in self.status}
+                
+    async def _check_system_resources(self) -> bool:
+        """Check system CPU, memory, and disk"""
+        try:
+            # CPU usage check
+            cpu_percent = psutil.cpu_percent()
+            if cpu_percent > 80:  # 80% threshold
+                self.ctx.logger.warning(f"High CPU usage: {cpu_percent}%")
+                return False
+                
+            # Memory usage check
+            memory = psutil.virtual_memory()
+            if memory.percent > 85:  # 85% threshold
+                self.ctx.logger.warning(f"High memory usage: {memory.percent}%")
+                return False
+                
+            # Disk space check
+            disk = psutil.disk_usage('/')
+            if disk.percent > 90:  # 90% threshold
+                self.ctx.logger.warning(f"Low disk space: {disk.percent}%")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Resource check failed: {e}")
+            return False
+            
+    async def _check_database(self) -> bool:
+        """Verify database connection and performance"""
+        try:
+            start_time = time.time()
+            await self.ctx.db.ping()
+            response_time = time.time() - start_time
+            
+            if response_time > 1.0:  # 1 second threshold
+                self.ctx.logger.warning(f"Slow database response: {response_time}s")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Database check failed: {e}")
+            return False
+            
+    async def _check_exchange(self) -> bool:
+        """Verify exchange connectivity"""
+        try:
+            start_time = time.time()
+            await self.ctx.exchange_interface.fetch_market_info("BTC/USDT")
+            response_time = time.time() - start_time
+            
+            if response_time > 2.0:  # 2 second threshold
+                self.ctx.logger.warning(f"Slow exchange response: {response_time}s")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Exchange check failed: {e}")
+            return False
+            
+    async def _check_market_data(self) -> bool:
+        """Verify market data freshness"""
+        try:
+            for symbol in self.ctx.config['market_list']:
+                last_update = self.ctx.market_data.last_update.get(symbol)
+                if not last_update or time.time() - last_update > 300:  # 5 minutes
+                    self.ctx.logger.warning(f"Stale market data for {symbol}")
+                    return False
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Market data check failed: {e}")
+            return False
 
     async def check_database(self) -> Tuple[bool, float, Optional[str]]:
         """Check database connectivity"""
@@ -155,11 +290,8 @@ class HealthMonitor:
                 
             # Track latency history
             if component not in self.latency_history:
-                self.latency_history[component] = []
+                self.latency_history[component] = deque(maxlen=self.max_history)
             self.latency_history[component].append(latency)
-            
-            # Keep last 1000 measurements
-            self.latency_history[component] = self.latency_history[component][-1000:]
             
             # Check for degradation
             if len(self.latency_history[component]) >= 100:
@@ -174,48 +306,6 @@ class HealthMonitor:
                     
         except Exception as e:
             handle_error(e, "HealthMonitor.update_component", logger=self.logger)
-
-    async def monitor_loop(self) -> None:
-        """Main monitoring loop"""
-        while True:
-            try:
-                # Check database
-                db_healthy, db_latency, db_error = await self.check_database()
-                self.update_component('database', db_healthy, db_latency, db_error)
-
-                # Check exchange if live trading
-                if not self.ctx.config.get('paper_mode', True):
-                    ex_healthy, ex_latency, ex_error = await self.check_exchange()
-                    self.update_component('exchange', ex_healthy, ex_latency, ex_error)
-
-                # Check system resources
-                sys_metrics = self.check_system_resources()
-                sys_healthy = all([
-                    sys_metrics['memory_healthy'],
-                    sys_metrics['disk_healthy'],
-                    sys_metrics['cpu_healthy']
-                ])
-                self.update_component('system', sys_healthy, 0)
-
-                # Update overall health status
-                self.status = self.get_health_status()
-                
-                if not self.status.is_healthy:
-                    self.logger.warning(
-                        f"System health check failed:\n{json.dumps(self.get_health_report(), indent=2)}"
-                    )
-                    
-                    # Check if emergency shutdown needed
-                    if self.should_emergency_shutdown():
-                        self.logger.critical("Health check triggering emergency shutdown")
-                        await self.ctx.circuit_breaker.emergency_shutdown("Critical health check failure")
-                        break
-
-                await asyncio.sleep(30)  # Check every 30 seconds
-
-            except Exception as e:
-                handle_error(e, "HealthMonitor.monitor_loop", logger=self.logger)
-                await asyncio.sleep(5)  # Back off on error
 
     def should_emergency_shutdown(self) -> bool:
         """Determine if emergency shutdown needed"""
@@ -323,3 +413,10 @@ class HealthMonitor:
                 'healthy': False,
                 'error': str(e)
             }
+
+    async def update_component_metrics(self, component: str, latency: float):
+        """Thread-safe component metric updates"""
+        async with self._metric_lock:
+            if component not in self.latency_history:
+                self.latency_history[component] = deque(maxlen=self.max_history)
+            self.latency_history[component].append(latency)

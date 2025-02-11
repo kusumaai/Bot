@@ -13,9 +13,11 @@ from decimal import Decimal
 import uuid
 import logging
 import pandas_ta as ta
+import sys
+import asyncio
 
 from database.database import DBConnection, execute_sql
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from trading.math import (
     calculate_expected_value,
     calculate_kelly_fraction,
@@ -29,6 +31,7 @@ from indicators.indicators_pta import compute_indicators
 from signals.trading_types import MarketState
 from signals.population import create_baseline_rule
 from signals.evaluation import evaluate_rule
+from utils.numeric import NumericHandler
 
 @dataclass
 class BacktestResults:
@@ -52,13 +55,22 @@ class BacktestResults:
             f"Total Return: {self.total_return:.2%}"
         )
 
+@dataclass
+class BacktestConfig:
+    warmup_periods: int = 233  # Was magic number
+    position_size_limit: Decimal = Decimal('0.10')  # Was hardcoded 10%
+    min_trade_size: Decimal = Decimal('0.01')
+    commission: Decimal = Decimal('0.001')  # 0.1% commission
+    stop_loss_pct: Decimal = Decimal('0.02')  # 2% stop loss
+    take_profit_pct: Decimal = Decimal('0.03')  # 3% take profit
+
 class Backtester:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.initial_balance = Decimal(str(ctx.config.get("initial_balance", 10000)))
-        self.commission = Decimal(str(ctx.config.get("commission_rate", 0.001)))
-        self.max_hold_bars = int((ctx.config.get("max_hold_hours", 8) * 60) / 
-                                ctx.config.get("timeframe_minutes", 15))
+        self.nh = NumericHandler()
+        self.config = BacktestConfig()
+        self.initial_balance = self.nh.to_decimal(ctx.config.get('initial_balance', '10000'))
+        self.current_balance = self.initial_balance
         self.ratchet_manager = RatchetManager(ctx)
         self.logger = ctx.logger or logging.getLogger(__name__)
 
@@ -68,26 +80,37 @@ class Backtester:
             return dt.strftime('%Y-%m-%d %H:%M:%S')
         return str(dt)
 
-    def load_data(self, start_date: str, end_date: str) -> pd.DataFrame:
-        """Load historical data for backtesting"""
+    async def load_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Load historical data with pagination"""
         try:
-            with DBConnection(self.ctx.db_pool) as conn:
-                query = """
-                    SELECT *
-                    FROM candles
-                    WHERE datetime BETWEEN ? AND ?
-                    ORDER BY datetime ASC
-                """
-                df = pd.read_sql_query(query, conn, params=[start_date, end_date])
+            chunk_size = 10000  # Process in chunks to manage memory
+            chunks = []
+            
+            async with DBConnection(self.ctx.db_pool) as conn:
+                for offset in range(0, sys.maxsize, chunk_size):
+                    query = """
+                        SELECT *
+                        FROM candles
+                        WHERE datetime BETWEEN ? AND ?
+                        ORDER BY datetime ASC
+                        LIMIT ? OFFSET ?
+                    """
+                    chunk = await conn.execute_sql(
+                        query, 
+                        [start_date, end_date, chunk_size, offset]
+                    )
+                    if not chunk:
+                        break
+                    chunks.append(pd.DataFrame(chunk))
+                    
+            if not chunks:
+                self.logger.warning("No data found for the specified date range")
+                return pd.DataFrame()
                 
-                if df.empty:
-                    self.logger.warning("No data found for the specified date range")
-                else:
-                    self.logger.info(f"Loaded {len(df)} candles for backtesting")
-                return df
-                
+            return pd.concat(chunks, ignore_index=True)
+            
         except Exception as e:
-            handle_error(e, "Backtester.load_data", logger=self.logger)
+            await handle_error_async(e, "Backtester.load_data", self.logger)
             return pd.DataFrame()
 
     def record_backtest_trade(self, trade: Dict[str, Any]) -> None:
@@ -180,20 +203,23 @@ class Backtester:
             position_size: Decimal,
             entry_candle: pd.Series,
             future_data: pd.DataFrame,
-            market_state: MarketState
+            market_state: Any
         ) -> Optional[Dict[str, Any]]:
         """Execute trade with comprehensive risk management"""
-        entry_price = Decimal(str(entry_candle["close"]))
-        entry_cost = position_size * entry_price * self.commission
-        entry_time = pd.to_datetime(entry_candle["datetime"])
         
-        # Enforce strict 10% position size limit
-        max_position = self.initial_balance * Decimal('0.10')  # Max 10% of balance
+        entry_price = self.nh.to_decimal(entry_candle["close"])
+        entry_cost = position_size * entry_price * self.config.commission
+        
+        # Calculate max position size based on current balance
+        max_position = self.current_balance * self.config.position_size_limit
         position_size = min(position_size, max_position / entry_price)
         
-        # Set strict stops
-        stop_loss = entry_price * (Decimal('1') - Decimal(str(self.ctx.config.get("stop_loss_pct", 0.02))))
-        take_profit = entry_price * (Decimal('1') + Decimal(str(self.ctx.config.get("take_profit_pct", 0.03))))
+        if position_size < self.config.min_trade_size:
+            return None
+            
+        # Set stops using config values
+        stop_loss = entry_price * (Decimal('1') - self.config.stop_loss_pct)
+        take_profit = entry_price * (Decimal('1') + self.config.take_profit_pct)
         
         trade_id = str(uuid.uuid4())
         self.ratchet_manager.initialize_trade(trade_id, float(entry_price))
@@ -255,7 +281,7 @@ class Backtester:
                 
                 # Max hold time check
                 current_time = pd.to_datetime(candle["datetime"])
-                if (current_time - entry_time).total_seconds() >= \
+                if (current_time - pd.to_datetime(entry_candle["datetime"])).total_seconds() >= \
                    (self.ctx.config.get("max_hold_hours", 8) * 3600):
                     hit_stop = True
                     exit_price = Decimal(str(candle["close"]))
@@ -270,7 +296,7 @@ class Backtester:
                 if hit_stop:
                     return self._close_trade(
                         signal, position_size, entry_price, exit_price,
-                        entry_cost, candle["datetime"], entry_time,
+                        entry_cost, candle["datetime"], pd.to_datetime(entry_candle["datetime"]),
                         exit_reason, max_adverse_excursion, max_favorable_excursion
                     )
                     
@@ -293,7 +319,7 @@ class Backtester:
             max_favorable_excursion: Decimal
         ) -> Dict[str, Any]:
         """Calculate trade result with fees"""
-        exit_cost = position_size * exit_price * self.commission
+        exit_cost = position_size * exit_price * self.config.commission
         total_fees = entry_cost + exit_cost
         
         if signal["direction"] == "long":
@@ -396,7 +422,7 @@ class Backtester:
                 continue
                 
             for i in range(len(prepared_data)):
-                if i < 233:  # Skip initial periods for longer EMAs
+                if i < self.config.warmup_periods:  # Skip initial periods for longer EMAs
                     continue
                     
                 window = prepared_data.iloc[max(0, i-100):i+1]

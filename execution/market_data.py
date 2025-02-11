@@ -9,6 +9,8 @@ import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
 from decimal import Decimal
 from datetime import datetime, timedelta
+import asyncio
+import time
 
 from database.database import DBConnection, execute_sql
 from utils.error_handler import handle_error
@@ -16,6 +18,7 @@ from indicators.indicators_pta import compute_indicators
 from indicators.quality_monitor import quality_check
 from signals.ga_synergy import prepare_market_state
 from trading.math import calculate_log_returns, estimate_volatility
+from utils.numeric import NumericHandler
 
 DEFAULT_MIN_TRADE_VALUE = Decimal('10.0')  # 10 USDT minimum by default
 
@@ -31,7 +34,11 @@ class MarketData:
             }
             for symbol, data in ctx.config.get("min_trade_sizes", {}).items()
         }
-        self.cache = {}
+        self.nh = NumericHandler()
+        self.data_cache: Dict[str, pd.DataFrame] = {}
+        self.last_update: Dict[str, float] = {}
+        self.update_interval = 60  # seconds
+        self._lock = asyncio.Lock()
         self.cache_timeout = ctx.config.get("market_data_cache_timeout", 60)  # seconds
 
     async def load_candles(self, symbol: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -39,8 +46,8 @@ class MarketData:
         try:
             # Check cache first
             cache_key = f"{symbol}_{self.ctx.config.get('timeframe', '15m')}"
-            if cache_key in self.cache:
-                cached_data = self.cache[cache_key]
+            if cache_key in self.data_cache:
+                cached_data = self.data_cache[cache_key]
                 if (datetime.now() - cached_data["timestamp"]).total_seconds() < self.cache_timeout:
                     return cached_data["df"], cached_data["market_data"]
 
@@ -86,7 +93,7 @@ class MarketData:
                 market_data["quality_report"] = quality_report
                 
                 # Update cache
-                self.cache[cache_key] = {
+                self.data_cache[cache_key] = {
                     "df": df,
                     "market_data": market_data,
                     "timestamp": datetime.now()
@@ -159,43 +166,65 @@ class MarketData:
                 "min_position_value": Decimal('0')
             }
 
-    def validate_trade_size(self, symbol: str, quantity: Decimal, price: Decimal) -> bool:
+    async def load_market_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+        """Load market data for multiple symbols concurrently"""
+        async with self._lock:
+            tasks = []
+            for symbol in symbols:
+                if not self._is_cache_valid(symbol):
+                    tasks.append(self._fetch_symbol_data(symbol))
+            
+            # Fetch all data concurrently
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for symbol, result in zip(symbols, results):
+                    if not isinstance(result, Exception):
+                        self.data_cache[symbol] = result
+                        self.last_update[symbol] = time.time()
+                    else:
+                        self.logger.error(f"Failed to fetch {symbol}: {result}")
+            
+            return {s: self.data_cache[s] for s in symbols if s in self.data_cache}
+    
+    async def _fetch_symbol_data(self, symbol: str) -> pd.DataFrame:
+        """Fetch data for a single symbol"""
+        try:
+            raw_data = await self.ctx.exchange_interface.fetch_ohlcv(
+                symbol,
+                timeframe=self.ctx.config['timeframe'],
+                limit=500  # Configurable
+            )
+            
+            df = pd.DataFrame(raw_data, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            ])
+            
+            # Convert prices to Decimal
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].apply(self.nh.to_decimal)
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching data for {symbol}: {e}")
+            raise
+    
+    def _is_cache_valid(self, symbol: str) -> bool:
+        """Check if cached data is still valid"""
+        return (
+            symbol in self.last_update and
+            time.time() - self.last_update[symbol] < self.update_interval
+        )
+    
+    async def validate_trade_size(self, symbol: str, size: Decimal) -> bool:
         """Validate if trade size meets minimum requirements"""
         try:
-            if quantity <= 0 or price <= 0:
-                return False
-                
-            trade_value = quantity * price
-            min_info = self._get_min_trade_info(symbol, float(price))
-            
-            return (
-                quantity >= min_info["min_quantity"] and
-                trade_value >= min_info["min_notional"]
-            )
-
+            market_info = await self.ctx.exchange_interface.fetch_market_info(symbol)
+            min_size = self.nh.to_decimal(market_info['min_size'])
+            return size >= min_size
         except Exception as e:
-            handle_error(e, "MarketData.validate_trade_size", logger=self.logger)
+            self.logger.error(f"Size validation failed for {symbol}: {e}")
             return False
-
-    async def load_market_data(
-        self,
-        symbols: List[str]
-    ) -> Tuple[Dict[str, Dict[str, Any]], List[pd.DataFrame]]:
-        """Load market data for multiple symbols"""
-        market_data = {}
-        dataframes = []
-        
-        for symbol in symbols:
-            try:
-                df, market_info = await self.load_candles(symbol)
-                if not df.empty:
-                    market_data[symbol] = market_info
-                    dataframes.append(df)
-                
-            except Exception as e:
-                handle_error(e, f"MarketData.load_market_data for {symbol}", logger=self.logger)
-                
-        return market_data, dataframes
 
     def get_tradable_symbols(self, balance: Decimal) -> List[str]:
         """Get list of symbols that can be traded with current balance"""
@@ -233,10 +262,10 @@ class MarketData:
         try:
             if symbol:
                 cache_key = f"{symbol}_{self.ctx.config.get('timeframe', '15m')}"
-                if cache_key in self.cache:
-                    del self.cache[cache_key]
+                if cache_key in self.data_cache:
+                    del self.data_cache[cache_key]
             else:
-                self.cache.clear()
+                self.data_cache.clear()
                 
         except Exception as e:
             handle_error(e, "MarketData.clear_cache", logger=self.logger)
@@ -280,14 +309,13 @@ if __name__ == "__main__":
     async def main():
         market_data = MarketData(ctx)
         
-        data, dfs = await market_data.load_market_data(ctx.config.get("market_list", ["BTC/USDT"]))
+        data = await market_data.load_market_data(ctx.config.get("market_list", ["BTC/USDT"]))
         
         if data:
-            for symbol, info in data.items():
+            for symbol, df in data.items():
                 print(f"\nSymbol: {symbol}")
-                print("Min Trade Info:", info["min_trade_info"])
-                print("Current Price:", info["current_price"])
-                print("Volatility:", info["volatility"])
+                print("Min Trade Info:", market_data._get_min_trade_info(symbol, float(df['close'].iloc[-1])))
+                print("Current Price:", df['close'].iloc[-1])
         
         tradable = market_data.get_tradable_symbols(Decimal('100.0'))  # with 100 USDT
         print("\nTradable symbols with 100 USDT:", tradable)

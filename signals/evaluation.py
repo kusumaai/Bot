@@ -6,6 +6,9 @@ import numpy as np
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple
 import logging
+from datetime import datetime, timedelta
+from utils.numeric import NumericHandler
+import pandas as pd
 
 from utils.error_handler import handle_error
 from trading.math import (
@@ -320,3 +323,122 @@ def simulate_rule(
     except Exception as e:
         handle_error(e, "evaluation.simulate_rule", logger=ctx.logger)
         return SimulationResult(0.0, TradeMetrics(), [], [str(e)])
+
+class SignalEvaluator:
+    def __init__(self, ctx: Any):
+        self.ctx = ctx
+        self.nh = NumericHandler()
+        self.performance_cache: Dict[str, Dict] = {}
+        
+    async def evaluate_signal(self, 
+                            signal: Dict, 
+                            market_data: pd.DataFrame) -> Optional[Dict]:
+        """Evaluate trading signal with comprehensive metrics"""
+        try:
+            # Calculate core metrics
+            win_rate = self._calculate_win_rate(signal['strategy'], market_data)
+            sharpe = self._calculate_sharpe_ratio(market_data['returns'])
+            expected_value = self._calculate_expected_value(
+                signal['probability'],
+                signal['target_price'],
+                signal['current_price']
+            )
+            
+            # Validate signal strength
+            if not self._validate_signal_metrics(win_rate, sharpe, expected_value):
+                return None
+                
+            evaluation = {
+                'timestamp': datetime.utcnow(),
+                'win_rate': self.nh.round_decimal(win_rate, 4),
+                'sharpe_ratio': self.nh.round_decimal(sharpe, 4),
+                'expected_value': self.nh.round_decimal(expected_value, 4),
+                'confidence_score': self._calculate_confidence(signal)
+            }
+            
+            # Cache evaluation results
+            self.performance_cache[signal['id']] = evaluation
+            return evaluation
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Signal evaluation failed: {e}")
+            return None
+            
+    def _calculate_win_rate(self, 
+                          strategy: str, 
+                          data: pd.DataFrame) -> Decimal:
+        """Calculate historical win rate for strategy"""
+        try:
+            trades = data[data['strategy'] == strategy]
+            if len(trades) < 30:  # Minimum sample size
+                return Decimal('0')
+                
+            wins = len(trades[trades['pnl'] > 0])
+            return self.nh.to_decimal(wins / len(trades))
+            
+        except Exception:
+            return Decimal('0')
+            
+    def _calculate_sharpe_ratio(self, 
+                              returns: pd.Series, 
+                              risk_free_rate: float = 0.02) -> Decimal:
+        """Calculate Sharpe ratio from returns"""
+        try:
+            if len(returns) < 30:
+                return Decimal('0')
+                
+            excess_returns = returns - risk_free_rate/252  # Daily adjustment
+            sharpe = np.sqrt(252) * (excess_returns.mean() / returns.std())
+            return self.nh.to_decimal(sharpe)
+            
+        except Exception:
+            return Decimal('0')
+            
+    def _calculate_expected_value(self,
+                                probability: float,
+                                target: Decimal,
+                                current: Decimal) -> Decimal:
+        """Calculate expected value of trade"""
+        try:
+            prob = self.nh.to_decimal(probability)
+            target_return = (target - current) / current
+            return prob * target_return
+            
+        except Exception:
+            return Decimal('0')
+            
+    def _validate_signal_metrics(self,
+                               win_rate: Decimal,
+                               sharpe: Decimal,
+                               ev: Decimal) -> bool:
+        """Validate if signal meets minimum criteria"""
+        return (
+            win_rate >= Decimal('0.5') and
+            sharpe >= Decimal('1.0') and
+            ev > Decimal('0')
+        )
+        
+    def _calculate_confidence(self, signal: Dict) -> Decimal:
+        """Calculate overall confidence score"""
+        try:
+            # Weighted average of multiple factors
+            weights = {
+                'win_rate': Decimal('0.4'),
+                'sharpe': Decimal('0.3'),
+                'volume': Decimal('0.3')
+            }
+            
+            scores = {
+                'win_rate': self.nh.to_decimal(signal.get('win_rate', 0)),
+                'sharpe': self.nh.to_decimal(signal.get('sharpe', 0)),
+                'volume': self.nh.to_decimal(signal.get('volume_score', 0))
+            }
+            
+            confidence = sum(
+                weights[k] * scores[k] for k in weights
+            )
+            
+            return self.nh.round_decimal(confidence, 4)
+            
+        except Exception:
+            return Decimal('0')

@@ -20,7 +20,7 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from database.database import DBConnection, execute_sql
 from signals.trading_types import MarketState, TradingRule
 from signals.storage import store_rule, load_best_rule

@@ -10,40 +10,191 @@ import sqlite3
 import logging
 from typing import Any, List, Dict, Optional, Union
 from contextlib import contextmanager
+from decimal import Decimal
+import asyncio
+import aiosqlite
+import json
+from datetime import datetime
+from utils.numeric import NumericHandler
+from utils.error_handler import handle_error, handle_error_async
 
 logger = logging.getLogger(__name__)
 
 class DBConnection:
     """Context manager for DB connection with proper error handling."""
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, pool_size: int = 5):
         self.db_path = db_path
-        self.conn = None
+        self.pool = asyncio.Queue(maxsize=pool_size)
+        self._lock = asyncio.Lock()
+        self._init_pool()
+        self.nh = NumericHandler()
 
-    def __enter__(self) -> sqlite3.Connection:
+    async def _init_pool(self):
+        """Initialize connection pool"""
+        for _ in range(self.pool.maxsize):
+            conn = await aiosqlite.connect(self.db_path)
+            await self.pool.put(conn)
+
+    async def execute_sql(self, query: str, params: Optional[List[Any]] = None) -> Any:
+        """Execute SQL with connection pooling and proper error handling"""
+        conn = await self.pool.get()
         try:
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row
-            # Enable WAL and foreign_keys for better concurrency 
-            self.conn.execute("PRAGMA journal_mode = WAL;")
-            self.conn.execute("PRAGMA foreign_keys = ON;")
-            self.conn.execute("PRAGMA busy_timeout = 5000;")  # 5 second timeout
-            return self.conn
+            async with conn.cursor() as cursor:
+                if params:
+                    await cursor.execute(query, params)
+                else:
+                    await cursor.execute(query)
+                await conn.commit()
+                return await cursor.fetchall()
         except Exception as e:
-            logger.error(f"Failed to connect to database {self.db_path}: {str(e)}")
+            await handle_error_async(e, "DBConnection.execute_sql", self.logger)
             raise
+        finally:
+            await self.pool.put(conn)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.conn:
-            if exc_type is None:
-                try:
-                    self.conn.commit()
-                except Exception as e:
-                    logger.error(f"Failed to commit transaction: {str(e)}")
-                    self.conn.rollback()
-            else:
-                self.conn.rollback()
-            self.conn.close()
+    async def initialize(self):
+        """Initialize database with required tables"""
+        async with self._lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.executescript("""
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        entry_price TEXT NOT NULL,
+                        exit_price TEXT,
+                        size TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        entry_time TIMESTAMP NOT NULL,
+                        exit_time TIMESTAMP,
+                        pnl TEXT,
+                        strategy TEXT NOT NULL,
+                        metadata TEXT
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS positions (
+                        symbol TEXT PRIMARY KEY,
+                        size TEXT NOT NULL,
+                        entry_price TEXT NOT NULL,
+                        current_price TEXT NOT NULL,
+                        unrealized_pnl TEXT NOT NULL,
+                        last_update TIMESTAMP NOT NULL
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS daily_performance (
+                        date DATE PRIMARY KEY,
+                        starting_balance TEXT NOT NULL,
+                        ending_balance TEXT NOT NULL,
+                        pnl TEXT NOT NULL,
+                        trade_count INTEGER NOT NULL,
+                        win_rate TEXT,
+                        metadata TEXT
+                    );
+                """)
+                
+    async def record_trade(self, trade: Dict) -> bool:
+        """Record trade with proper decimal handling"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT INTO trades (
+                        id, symbol, entry_price, size, side, status,
+                        entry_time, strategy, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    trade['id'],
+                    trade['symbol'],
+                    str(self.nh.to_decimal(trade['entry_price'])),
+                    str(self.nh.to_decimal(trade['size'])),
+                    trade['side'],
+                    'OPEN',
+                    datetime.utcnow(),
+                    trade['strategy'],
+                    json.dumps(trade.get('metadata', {}))
+                ))
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to record trade: {e}")
+            return False
+            
+    async def update_trade(self, 
+                          trade_id: str, 
+                          exit_price: Decimal,
+                          pnl: Decimal) -> bool:
+        """Update trade with exit information"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    UPDATE trades 
+                    SET exit_price = ?, exit_time = ?, pnl = ?, status = ?
+                    WHERE id = ?
+                """, (
+                    str(exit_price),
+                    datetime.utcnow(),
+                    str(pnl),
+                    'CLOSED',
+                    trade_id
+                ))
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update trade: {e}")
+            return False
+            
+    async def record_daily_performance(self, 
+                                     performance: Dict) -> bool:
+        """Record daily performance metrics"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO daily_performance (
+                        date, starting_balance, ending_balance,
+                        pnl, trade_count, win_rate, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    performance['date'],
+                    str(self.nh.to_decimal(performance['starting_balance'])),
+                    str(self.nh.to_decimal(performance['ending_balance'])),
+                    str(self.nh.to_decimal(performance['pnl'])),
+                    performance['trade_count'],
+                    str(self.nh.to_decimal(performance['win_rate'])),
+                    json.dumps(performance.get('metadata', {}))
+                ))
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to record performance: {e}")
+            return False
+            
+    async def get_open_positions(self) -> List[Dict]:
+        """Get all open positions"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT * FROM positions") as cursor:
+                    positions = await cursor.fetchall()
+                    return [{
+                        'symbol': pos['symbol'],
+                        'size': self.nh.to_decimal(pos['size']),
+                        'entry_price': self.nh.to_decimal(pos['entry_price']),
+                        'current_price': self.nh.to_decimal(pos['current_price']),
+                        'unrealized_pnl': self.nh.to_decimal(pos['unrealized_pnl']),
+                        'last_update': pos['last_update']
+                    } for pos in positions]
+        except Exception as e:
+            logger.error(f"Failed to get positions: {e}")
+            return []
+            
+    async def ping(self) -> bool:
+        """Check database connection"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("SELECT 1")
+                return True
+        except Exception:
+            return False
 
 def execute_sql(
     conn: sqlite3.Connection,

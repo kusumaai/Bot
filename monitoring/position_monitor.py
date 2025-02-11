@@ -10,8 +10,9 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import logging
+from collections import deque
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from risk.manager import RiskManager
 from risk.position import Position
 from risk.limits import RiskLimits
@@ -33,7 +34,8 @@ class PositionMonitor:
         self.risk_manager = risk_manager
         self.ctx = ctx
         self.logger = ctx.logger
-        self.alerts: List[PositionAlert] = []
+        self._lock = asyncio.Lock()
+        self.alerts: deque = deque(maxlen=1000)  # Fixed size alert history
         
         # Get thresholds from config
         monitor_cfg = ctx.config.get("position_monitor", {})
@@ -70,7 +72,7 @@ class PositionMonitor:
         try:
             # Check duration
             if current_time - position.entry_time > self.duration_threshold:
-                self._create_alert(
+                await self._create_alert(
                     position,
                     "DURATION",
                     f"Position held > {self.duration_threshold/3600:.1f}h",
@@ -79,7 +81,7 @@ class PositionMonitor:
 
             # Check drawdown
             if position.max_adverse_excursion < self.drawdown_threshold:
-                self._create_alert(
+                await self._create_alert(
                     position,
                     "DRAWDOWN",
                     f"Position MAE > {abs(float(self.drawdown_threshold)*100)}%",
@@ -89,7 +91,7 @@ class PositionMonitor:
             # Check stop loss proximity
             sl_distance = abs(position.current_price - position.stop_loss) / position.current_price
             if sl_distance < Decimal("0.01"):  # Within 1% of stop loss
-                self._create_alert(
+                await self._create_alert(
                     position,
                     "STOP_LOSS",
                     f"Position near stop loss ({float(sl_distance)*100:.1f}% away)",
@@ -99,7 +101,7 @@ class PositionMonitor:
             # Check position size
             max_size = self.risk_manager.get_max_position_size(position.symbol)
             if position.size > max_size:
-                self._create_alert(
+                await self._create_alert(
                     position,
                     "SIZE",
                     f"Position size ({position.size}) exceeds max ({max_size})",
@@ -109,34 +111,32 @@ class PositionMonitor:
         except Exception as e:
             handle_error(e, f"PositionMonitor._check_position: {position.symbol}", logger=self.logger)
 
-    def _create_alert(self, position: Position, alert_type: str, message: str, severity: str):
-        """Create and log position alert"""
+    async def _create_alert(self, position: Position, alert_type: str, 
+                           message: str, severity: str):
+        """Thread-safe alert creation"""
         try:
-            alert = PositionAlert(
-                symbol=position.symbol,
-                alert_type=alert_type,
-                message=message,
-                timestamp=time.time(),
-                severity=severity,
-                position_size=position.size,
-                current_price=position.current_price,
-                entry_price=position.entry_price,
-                unrealized_pnl=position.unrealized_pnl
-            )
-            
-            self.alerts.append(alert)
-            
-            if severity == "CRITICAL":
-                self.logger.critical(f"{alert.symbol} - {alert.message}")
-            else:
-                self.logger.warning(f"{alert.symbol} - {alert.message}")
-
-            # Enforce max alerts limit
-            if len(self.alerts) > self.max_alerts:
-                self.alerts = self.alerts[-self.max_alerts:]
+            async with self._lock:
+                alert = PositionAlert(
+                    symbol=position.symbol,
+                    alert_type=alert_type,
+                    message=message,
+                    timestamp=time.time(),
+                    severity=severity,
+                    position_size=position.size,
+                    current_price=position.current_price,
+                    entry_price=position.entry_price,
+                    unrealized_pnl=position.unrealized_pnl
+                )
+                
+                self.alerts.append(alert)
+                
+                if severity == "CRITICAL":
+                    self.logger.critical(f"{alert.symbol} - {alert.message}")
+                else:
+                    self.logger.warning(f"{alert.symbol} - {alert.message}")
 
         except Exception as e:
-            handle_error(e, "PositionMonitor._create_alert", logger=self.logger)
+            await handle_error_async(e, "PositionMonitor._create_alert", self.logger)
 
     def _cleanup_old_alerts(self, max_age: Optional[float] = None):
         """Remove old alerts"""
@@ -145,10 +145,10 @@ class PositionMonitor:
                 max_age = self.cleanup_interval
                 
             current_time = time.time()
-            self.alerts = [
+            self.alerts = deque(
                 alert for alert in self.alerts
                 if current_time - alert.timestamp < max_age
-            ]
+            )
             
         except Exception as e:
             handle_error(e, "PositionMonitor._cleanup_old_alerts", logger=self.logger) 

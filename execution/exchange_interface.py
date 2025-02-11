@@ -11,9 +11,11 @@ import ccxt.async_support as ccxt
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import uuid
+import logging
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from database.database import DBConnection, execute_sql
+from utils.numeric import NumericHandler
 
 class ExchangeInterface:
     def __init__(self, ctx: Any):
@@ -26,6 +28,11 @@ class ExchangeInterface:
         self.paper_mode = ctx.config.get("paper_mode", True)
         self.paper_balance = Decimal(str(ctx.config.get("initial_balance", "10000")))
         self.paper_positions = {}
+        self.nh = NumericHandler()
+        self._lock = asyncio.Lock()
+        self.order_cache: Dict[str, Dict] = {}
+        self.market_info: Dict[str, Dict] = {}
+        self.last_prices: Dict[str, Decimal] = {}
 
     async def initialize(self) -> bool:
         """Initialize exchange connection with credentials"""
@@ -88,86 +95,85 @@ class ExchangeInterface:
             handle_error(e, "ExchangeInterface.fetch_ticker", logger=self.logger)
             return None
 
-    async def place_order(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        price: Optional[Decimal] = None,
-        order_type: str = "limit"
-    ) -> Optional[Dict[str, Any]]:
-        """Place order with comprehensive error handling"""
-        if self.paper_mode:
-            # Simulate order execution with slippage
-            slippage = self.ctx.config.get("slippage_rate", Decimal("0.001"))
-            commission = self.ctx.config.get("commission_rate", Decimal("0.001"))
-            
-            # Calculate execution price with slippage
-            ticker_price = await self.fetch_ticker(symbol)["last"]
-            executed_price = ticker_price * (Decimal("1") + (slippage if side == "buy" else -slippage))
-            
-            # Calculate fees
-            fee = amount * executed_price * commission
-            
-            # Update paper balance
-            cost = amount * executed_price + fee
-            if side == "buy":
-                self.paper_balance -= cost
-            else:
-                self.paper_balance += cost
-            
-            # Track paper position
-            trade_id = f"paper_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-            self.paper_positions[trade_id] = {
-                "symbol": symbol,
-                "side": side,
-                "amount": amount,
-                "entry_price": executed_price,
-                "fee": fee
-            }
-            
-            return {
-                "id": trade_id,
-                "price": executed_price,
-                "amount": amount,
-                "cost": cost,
-                "fee": fee
-            }
-        else:
-            if not self.exchange:
-                return None
-
+    async def place_order(self, 
+                         symbol: str, 
+                         side: str, 
+                         size: Decimal, 
+                         price: Optional[Decimal] = None) -> Optional[Dict]:
+        """Place order with retry logic and validation"""
+        async with self._lock:
             try:
-                await self._rate_limit_request()
-                params = {}
-                
-                if order_type == "market":
-                    order = await self.exchange.create_market_order(
-                        symbol, side, float(amount), None, params
-                    )
-                else:
-                    if not price:
-                        self.logger.error("Price required for limit order")
-                        return None
-                    order = await self.exchange.create_limit_order(
-                        symbol, side, float(amount), float(price), params
-                    )
-
-                return {
-                    "id": order.get("id", ""),
-                    "symbol": symbol,
-                    "type": order_type,
-                    "side": side,
-                    "price": Decimal(str(order.get("price", 0))),
-                    "amount": Decimal(str(order.get("amount", 0))),
-                    "filled": Decimal(str(order.get("filled", 0))),
-                    "status": order.get("status", "unknown"),
-                    "timestamp": order.get("timestamp", 0)
+                # Validate order parameters
+                if not await self._validate_order_params(symbol, size):
+                    return None
+                    
+                # Format order
+                order = {
+                    'symbol': symbol,
+                    'side': side.upper(),
+                    'size': self.nh.round_decimal(size, 8),
+                    'type': 'MARKET' if price is None else 'LIMIT',
                 }
-
+                if price:
+                    order['price'] = self.nh.round_decimal(price, 8)
+                    
+                # Place order with retry
+                for attempt in range(3):
+                    try:
+                        result = await self.ctx.exchange.create_order(**order)
+                        self.order_cache[result['id']] = {
+                            **result,
+                            'timestamp': datetime.utcnow()
+                        }
+                        return result
+                    except Exception as e:
+                        if attempt == 2:  # Last attempt
+                            raise
+                        await asyncio.sleep(1)  # Wait before retry
+                        
             except Exception as e:
-                handle_error(e, "ExchangeInterface.place_order", logger=self.logger)
+                self.ctx.logger.error(f"Order placement failed: {e}")
                 return None
+                
+    async def _validate_order_params(self, 
+                                   symbol: str, 
+                                   size: Decimal) -> bool:
+        """Validate order parameters against exchange rules"""
+        try:
+            info = await self.fetch_market_info(symbol)
+            min_size = self.nh.to_decimal(info['min_size'])
+            
+            if size < min_size:
+                self.ctx.logger.error(f"Size {size} below minimum {min_size}")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Order validation failed: {e}")
+            return False
+            
+    async def fetch_market_info(self, symbol: str) -> Dict:
+        """Fetch and cache market information"""
+        if symbol not in self.market_info:
+            info = await self.ctx.exchange.fetch_market(symbol)
+            self.market_info[symbol] = {
+                'min_size': self.nh.to_decimal(info['limits']['amount']['min']),
+                'price_precision': info['precision']['price'],
+                'size_precision': info['precision']['amount']
+            }
+        return self.market_info[symbol]
+        
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel order with verification"""
+        try:
+            await self.ctx.exchange.cancel_order(order_id)
+            if order_id in self.order_cache:
+                del self.order_cache[order_id]
+            return True
+        except Exception as e:
+            self.ctx.logger.error(f"Order cancellation failed: {e}")
+            return False
 
     async def close_position(self, trade: Dict[str, Any]) -> bool:
         """Close an open position with proper error handling"""

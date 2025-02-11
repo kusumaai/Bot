@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 import time
+from datetime import datetime, timedelta
+from utils.numeric import NumericHandler
 
 from utils.error_handler import handle_error
 
@@ -20,6 +22,67 @@ class MarketDataValidation:
     volume: Decimal
     is_valid: bool
     error_message: Optional[str] = None
+
+class MarketDataValidation:
+    def __init__(self, ctx: Any):
+        self.ctx = ctx
+        self.nh = NumericHandler()
+        self.validation_cache: Dict[str, Dict] = {}
+        self.stale_threshold = timedelta(minutes=5)
+        
+    async def validate_market_data(self, 
+                                 symbol: str, 
+                                 data: Dict) -> bool:
+        """Comprehensive market data validation"""
+        try:
+            # Check for required fields
+            required_fields = ['price', 'volume', 'timestamp']
+            if not all(field in data for field in required_fields):
+                return False
+                
+            # Validate timestamp freshness
+            data_time = datetime.fromtimestamp(data['timestamp'])
+            if datetime.utcnow() - data_time > self.stale_threshold:
+                return False
+                
+            # Price sanity checks
+            price = self.nh.to_decimal(data['price'])
+            if price <= Decimal('0'):
+                return False
+                
+            # Volume checks
+            volume = self.nh.to_decimal(data['volume'])
+            if volume <= Decimal('0'):
+                return False
+                
+            # Volatility check
+            if not await self._check_volatility(symbol, price):
+                return False
+                
+            # Cache valid data
+            self.validation_cache[symbol] = {
+                'last_valid_price': price,
+                'last_valid_time': datetime.utcnow()
+            }
+            
+            return True
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Market data validation failed: {e}")
+            return False
+            
+    async def _check_volatility(self, 
+                              symbol: str, 
+                              current_price: Decimal) -> bool:
+        """Check if price movement is within acceptable range"""
+        if symbol not in self.validation_cache:
+            return True
+            
+        last_price = self.validation_cache[symbol]['last_valid_price']
+        price_change = abs(current_price - last_price) / last_price
+        
+        # Reject if price change > 10% in one update
+        return price_change <= Decimal('0.10')
 
 def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
     """Validate market data freshness and integrity"""

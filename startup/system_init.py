@@ -13,7 +13,7 @@ import os
 from decimal import Decimal
 import psutil
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async, init_error_handler
 from database.database import DBConnection, execute_sql
 
 class SystemInitializer:
@@ -22,6 +22,9 @@ class SystemInitializer:
         self.startup_checks_passed = False
         self.initialization_errors: List[str] = []
         self.logger = ctx.logger or logging.getLogger(__name__)
+        
+        # Initialize error handler with database path
+        init_error_handler(ctx.db_pool)
 
     async def initialize_system(self) -> bool:
         """Complete system initialization sequence"""
@@ -112,39 +115,23 @@ class SystemInitializer:
             return False
 
     async def verify_database(self) -> bool:
-        """Verify database schema and connectivity"""
+        """Verify database tables with SQL injection protection"""
         try:
-            required_tables = [
-                'account',
-                'trades',
-                'candles',
-                'bot_performance',
-                'balance_transactions'
-            ]
+            required_tables = ['trades', 'positions', 'performance']
+            placeholders = ', '.join('?' * len(required_tables))
+            query = f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
             
-            with self.ctx.db_pool.connection() as conn:
-                existing_tables = execute_sql(
-                    conn,
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-                existing_tables = [t[0] for t in existing_tables]
+            async with DBConnection(self.ctx.db_pool) as conn:
+                existing = await conn.execute_sql(query, required_tables)
+                missing = set(required_tables) - {row[0] for row in existing}
                 
-                missing = set(required_tables) - set(existing_tables)
                 if missing:
-                    self.logger.error(f"Missing required tables: {', '.join(missing)}")
+                    self.logger.error(f"Missing required tables: {missing}")
                     return False
+                return True
                     
-                for table in required_tables:
-                    try:
-                        execute_sql(conn, f"SELECT * FROM {table} LIMIT 1")
-                    except Exception as e:
-                        self.logger.error(f"Failed to query table {table}: {str(e)}")
-                        return False
-                        
-            return True
-            
         except Exception as e:
-            handle_error(e, "SystemInitializer.verify_database", logger=self.logger)
+            await handle_error_async(e, "SystemInitializer.verify_database", self.logger)
             return False
 
     async def initialize_exchange(self) -> bool:

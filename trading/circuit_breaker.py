@@ -15,27 +15,40 @@ import os
 import sys
 import pandas as pd
 import numpy as np
+from enum import Enum
+from utils.numeric import NumericHandler
 
 from risk.limits import RiskLimits
 from risk.position import Position
 from risk.manager import RiskManager
 from utils.error_handler import handle_error
 
-class CircuitBreakerState:
-    CLOSED = "closed"     # Normal operation
-    HALF_OPEN = "half"    # Testing if system can resume
-    OPEN = "open"         # Trading halted
+class CircuitBreakerState(Enum):
+    NORMAL = "NORMAL"
+    WARNING = "WARNING"
+    TRIGGERED = "TRIGGERED"
 
 class CircuitBreaker:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.state = CircuitBreakerState.CLOSED
+        self.nh = NumericHandler()
+        self.state = CircuitBreakerState.NORMAL
         self.last_state_change = time.time()
+        self.error_counts: Dict[str, int] = {}
         self.triggered_reasons: List[str] = []
+        
+        # Initialize with config values
+        self.max_daily_loss = self.nh.percentage_to_decimal(
+            ctx.config.get('max_daily_loss', '3')
+        )
+        self.warning_threshold = self.nh.percentage_to_decimal(
+            ctx.config.get('warning_threshold', '2')
+        )
+        self.daily_pnl = Decimal('0')
+        self.daily_high_balance = Decimal('0')
         
         # Load thresholds from config with proper decimal handling
         self.config = ctx.config.get("circuit_breaker", {})
-        self.max_daily_loss = Decimal(str(self.config.get("max_daily_loss", "-0.03")))
         self.max_drawdown = Decimal(str(self.config.get("max_drawdown_pct", "10"))) / Decimal("100")
         self.max_position_loss = Decimal(str(self.config.get("max_position_loss_pct", "5"))) / Decimal("100")
         self.position_correlation_limit = Decimal(str(self.config.get("position_correlation_limit", "0.7")))
@@ -43,13 +56,41 @@ class CircuitBreaker:
         self.recovery_time = self.config.get("recovery_time_minutes", 30)
         
         # State tracking
-        self.daily_high_balance = Decimal('0')
-        self.daily_pnl = Decimal('0')
-        self.error_counts: Dict[str, int] = {}
         self.last_error_reset = time.time()
         
         # Start monitoring
         asyncio.create_task(self.monitor_loop())
+
+    async def check_conditions(self) -> bool:
+        """Check if trading should be allowed"""
+        try:
+            # Get current portfolio value
+            portfolio_value = await self.ctx.portfolio_manager.get_total_value()
+            
+            # Update daily high water mark
+            self.daily_high_balance = max(self.daily_high_balance, portfolio_value)
+            
+            # Calculate daily PnL
+            self.daily_pnl = portfolio_value - self.daily_high_balance
+            
+            # Check daily loss threshold
+            if self.daily_pnl <= -self.max_daily_loss * self.daily_high_balance:
+                self.triggered_reasons.append("Daily loss threshold exceeded")
+                await self._update_state(CircuitBreakerState.TRIGGERED)
+                return False
+                
+            return self.state != CircuitBreakerState.TRIGGERED
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Circuit breaker check failed: {e}")
+            return False
+            
+    async def _update_state(self, new_state: CircuitBreakerState) -> None:
+        """Update circuit breaker state with logging"""
+        if new_state != self.state:
+            self.state = new_state
+            self.last_state_change = time.time()
+            self.log_state()
 
     def check_trading_limits(self) -> Optional[str]:
         """Check trading-based circuit breaker conditions"""
@@ -171,8 +212,8 @@ class CircuitBreaker:
 
     async def open_circuit(self, reason: str) -> None:
         """Open the circuit breaker and halt trading"""
-        if self.state != CircuitBreakerState.OPEN:
-            self.state = CircuitBreakerState.OPEN
+        if self.state != CircuitBreakerState.TRIGGERED:
+            self.state = CircuitBreakerState.TRIGGERED
             self.last_state_change = time.time()
             self.triggered_reasons.append(reason)
             
@@ -248,7 +289,7 @@ class CircuitBreaker:
         """Main monitoring loop"""
         while True:
             try:
-                if self.state == CircuitBreakerState.CLOSED:
+                if self.state == CircuitBreakerState.NORMAL:
                     # Check circuit breaker conditions
                     trading_violation = self.check_trading_limits()
                     if trading_violation:
@@ -260,24 +301,12 @@ class CircuitBreaker:
                         await self.open_circuit(technical_violation)
                         continue
                 
-                elif self.state == CircuitBreakerState.OPEN:
+                elif self.state == CircuitBreakerState.TRIGGERED:
                     # Check if we can try recovery
                     if await self.test_recovery():
-                        self.state = CircuitBreakerState.HALF_OPEN
-                        self.last_state_change = time.time()
-                        self.ctx.logger.info("Circuit breaker entering half-open state")
-                
-                elif self.state == CircuitBreakerState.HALF_OPEN:
-                    # Test with reduced trading
-                    trading_ok = await self.test_trading()
-                    if trading_ok:
-                        self.state = CircuitBreakerState.CLOSED
+                        self.state = CircuitBreakerState.NORMAL
                         self.last_state_change = time.time()
                         self.ctx.logger.info("Circuit breaker closed - resuming normal operation")
-                    else:
-                        self.state = CircuitBreakerState.OPEN
-                        self.last_state_change = time.time()
-                        self.ctx.logger.warning("Circuit breaker recovery failed - returning to open state")
                 
                 await asyncio.sleep(1)  # Check every second
                 

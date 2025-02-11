@@ -9,8 +9,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 import time
 import logging
+import asyncio
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from .position import Position
 from .limits import RiskLimits
 from .portfolio import PortfolioManager
@@ -19,6 +20,7 @@ from .validation import validate_market_data
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .portfolio import PortfolioManager
+from utils.numeric import NumericHandler
 
 class RiskManager:
     def __init__(self, ctx: Any):
@@ -28,6 +30,7 @@ class RiskManager:
         if not self.limits:
             raise ValueError("Failed to initialize risk limits")
         self.portfolio = PortfolioManager(self.limits)
+        self.nh = NumericHandler()  # Use our new numeric handler
         
     def validate_position(self, symbol: str, size: Decimal, price: Decimal) -> Tuple[bool, Optional[str]]:
         """Validate a new position against all risk limits"""
@@ -186,4 +189,20 @@ class RiskManager:
         return (
             (position.direction == "long" and position.current_price <= position.stop_loss) or
             (position.direction == "short" and position.current_price >= position.stop_loss)
-        ) 
+        )
+
+    async def calculate_position_size(self, signal: Dict) -> Decimal:
+        """Calculate safe position size with all risk checks"""
+        try:
+            price = self.nh.to_decimal(signal['price'])
+            account_size = await self.get_account_size()
+            risk_factor = self.nh.percentage_to_decimal(self.limits.risk_factor)
+            
+            position_size = account_size * risk_factor
+            return min(
+                position_size,
+                self.limits.max_position_size * account_size
+            )
+        except Exception as e:
+            self.logger.error(f"Position size calculation failed: {e}")
+            return Decimal('0') 
