@@ -6,10 +6,11 @@ Centralized error handling utility
 
 import logging
 import traceback
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Type
 from datetime import datetime
 import json
 import asyncio
+from pathlib import Path
 
 from database.database import DBConnection
 
@@ -21,21 +22,55 @@ def init_error_handler(db_path: str) -> None:
     global _db_pool
     _db_pool = db_path
 
+class ApplicationError(Exception):
+    """Base exception class for application-specific errors"""
+    pass
+
+class DatabaseError(ApplicationError):
+    """Database-related errors"""
+    pass
+
+class ExchangeError(ApplicationError):
+    """Exchange interaction errors"""
+    pass
+
+class ValidationError(ApplicationError):
+    """Data validation errors"""
+    pass
+
 class ErrorHandler:
-    def __init__(self, logger: logging.Logger):
+    """Centralized error handling with logging and tracking"""
+    
+    def __init__(
+        self,
+        logger: logging.Logger,
+        db_connection: Optional['DBConnection'] = None
+    ):
         self.logger = logger
+        self.db_connection = db_connection
         self._error_counts: Dict[str, int] = {}
         self._lock = asyncio.Lock()
         
-    async def handle_error(self, 
-                          error: Exception, 
-                          source: str, 
-                          context: Optional[Dict] = None) -> None:
-        """Handle error with proper logging and tracking"""
+    async def handle_error(
+        self,
+        error: Exception,
+        context: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        reraise: bool = True
+    ) -> None:
+        """
+        Handle an error with proper logging and optional database storage
+        
+        Args:
+            error: The exception that occurred
+            context: Where the error occurred
+            metadata: Additional error context
+            reraise: Whether to re-raise the error after handling
+        """
         async with self._lock:
             try:
                 error_type = type(error).__name__
-                error_key = f"{source}:{error_type}"
+                error_key = f"{context}:{error_type}"
                 
                 # Update error counts
                 self._error_counts[error_key] = self._error_counts.get(error_key, 0) + 1
@@ -43,12 +78,13 @@ class ErrorHandler:
                 # Prepare error details
                 error_details = {
                     'timestamp': datetime.utcnow().isoformat(),
-                    'source': source,
+                    'source': context,
                     'type': error_type,
                     'message': str(error),
                     'traceback': traceback.format_exc(),
-                    'context': context or {},
-                    'count': self._error_counts[error_key]
+                    'context': context,
+                    'count': self._error_counts[error_key],
+                    'metadata': metadata or {}
                 }
                 
                 # Log error with appropriate severity
@@ -58,6 +94,17 @@ class ErrorHandler:
                 else:
                     self.logger.error(json.dumps(error_details, indent=2))
                     
+                # Store in database if connection available
+                if self.db_connection:
+                    try:
+                        await self._store_error(error_details)
+                    except Exception as db_error:
+                        self.logger.critical(f"Failed to store error in database: {db_error}")
+                
+                # Re-raise critical errors
+                if reraise and isinstance(error, (DatabaseError, ExchangeError, ValidationError)):
+                    raise error
+                
             except Exception as e:
                 # Fallback error handling
                 self.logger.critical(f"Error handler failed: {e}")
@@ -115,6 +162,30 @@ class ErrorHandler:
             'error_counts': dict(self._error_counts),
             'last_update': datetime.utcnow().isoformat()
         }
+
+    async def _store_error(self, error_info: Dict[str, Any]) -> None:
+        """Store error information in database"""
+        query = """
+            INSERT INTO error_log (
+                timestamp, context, error_type, 
+                error_message, traceback, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        params = [
+            error_info['timestamp'],
+            error_info['context'],
+            error_info['type'],
+            error_info['message'],
+            error_info['traceback'],
+            json.dumps(error_info['metadata'])
+        ]
+        
+        async with self.db_connection.get_connection() as conn:
+            await conn.execute(query, params)
+            
+    def get_error_counts(self) -> Dict[str, int]:
+        """Get current error counts by type"""
+        return self._error_counts.copy()
 
 async def handle_error_async(
     e: Exception,

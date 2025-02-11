@@ -9,11 +9,17 @@ import json
 import pickle
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple, Optional, Union
 from dataclasses import dataclass
 import time
+import joblib
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+from datetime import datetime
+import logging
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, ValidationError, ModelError
+from database.queries import DatabaseQueries
 
 @dataclass
 class MLModels:
@@ -22,189 +28,166 @@ class MLModels:
     trained_columns: List[str]
 
 class MLSignalGenerator:
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
-        self.logger = ctx.logger
-        self.models: Optional[MLModels] = None
-        self.cache_timeout = ctx.config.get("model_cache_timeout", 3600)  # 1 hour
-        self.last_load_time = 0
-
-    def load_models(self) -> Optional[MLModels]:
-        """Load trained ML models with caching and validation"""
-        try:
-            current_time = time.time()
-            if self.models and (current_time - self.last_load_time) < self.cache_timeout:
-                return self.models
-
-            model_paths = self.ctx.config.get("model_paths", {})
-            rf_path = model_paths.get("rf_model", os.path.join("models", "trained_rf.pkl"))
-            xgb_path = model_paths.get("xgb_model", os.path.join("models", "trained_xgb.pkl"))
-            cols_path = model_paths.get("trained_columns", os.path.join("models", "trained_columns.json"))
-
-            # Load RF (required)
-            try:
-                with open(rf_path, "rb") as f:
-                    rf_model = pickle.load(f)
-            except Exception as e:
-                handle_error(e, f"MLSignal.load_models: RF from {rf_path}", logger=self.logger)
-                return None
-
-            # Load XGB (optional)
-            xgb_model = None
-            if os.path.exists(xgb_path):
-                try:
-                    with open(xgb_path, "rb") as f:
-                        xgb_model = pickle.load(f)
-                except Exception as e:
-                    handle_error(e, f"MLSignal.load_models: XGB from {xgb_path}", logger=self.logger)
-
-            # Load trained columns (required)
-            try:
-                with open(cols_path, "r") as f:
-                    trained_columns = json.load(f)
-                if not trained_columns:
-                    raise ValueError("Empty trained columns list")
-            except Exception as e:
-                handle_error(e, f"MLSignal.load_models: columns from {cols_path}", logger=self.logger)
-                return None
-
-            self.models = MLModels(rf_model, xgb_model, trained_columns)
-            self.last_load_time = current_time
-            return self.models
-
-        except Exception as e:
-            handle_error(e, "MLSignal.load_models", logger=self.logger)
-            return None
-
-    def generate_signals(self, features_df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Generate ML-based signals with proper validation and error handling"""
-        signals = []
+    def __init__(
+        self,
+        db_queries: DatabaseQueries,
+        logger: logging.Logger,
+        model_path: Optional[str] = None
+    ):
+        self.db = db_queries
+        self.logger = logger
+        self.model_path = model_path
+        self.scaler = StandardScaler()
         
+        self._model = None
+        self._feature_names: List[str] = []
+        self._last_validation: Optional[datetime] = None
+        
+    async def generate_signal(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_periods: int = 100
+    ) -> Dict[str, Any]:
         try:
-            # Load/refresh models
-            models = self.load_models()
-            if not models:
-                self.logger.error("Failed to load ML models")
-                return signals
-
-            # Validate input data
-            if features_df.empty:
-                self.logger.warning("Empty features DataFrame")
-                return signals
-
-            # Get configuration
-            ml_cfg = self.ctx.config.get("ml_signals", {})
-            ml_long_th = ml_cfg.get("long_threshold", 0.6)
-            ml_short_th = ml_cfg.get("short_threshold", 0.4)
-            allow_shorts = ml_cfg.get("allow_shorts", False)
-            weights = ml_cfg.get("model_weights", {"rf": 0.6, "xgb": 0.4})
-
-            # Process each symbol
-            for symbol, group in features_df.groupby("symbol"):
-                try:
-                    latest = group.iloc[-1]
-                    
-                    # Build feature vector
-                    fv = self._build_feature_vector(latest, models.trained_columns, symbol)
-                    if fv is None:
-                        continue
-
-                    # Get predictions
-                    probability = self._get_ensemble_prediction(
-                        fv, models.rf_model, models.xgb_model, weights
-                    )
-                    if probability is None:
-                        continue
-
-                    # Generate signals based on thresholds
-                    signal = self._create_signal(
-                        symbol, probability, latest["close"],
-                        ml_long_th, ml_short_th, allow_shorts
-                    )
-                    if signal:
-                        signals.append(signal)
-
-                except Exception as e:
-                    handle_error(e, f"MLSignal.generate_signals: {symbol}", logger=self.logger)
-
+            # Load and validate model
+            if not self._model:
+                await self._load_model()
+            
+            # Get and prepare data
+            candles = await self.db.get_recent_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=lookback_periods
+            )
+            
+            features = self._prepare_features(candles)
+            
+            # Validate features
+            self._validate_features(features)
+            
+            # Generate prediction
+            prediction = self._generate_prediction(features)
+            
+            # Create signal
+            signal = self._create_signal(prediction, features)
+            
+            # Store signal
+            await self.db.store_signal(
+                symbol=symbol,
+                signal_type='ml_model',
+                direction=signal['direction'],
+                strength=signal['strength'],
+                metadata={
+                    'features': signal['features'],
+                    'prediction': float(prediction),
+                    'model_version': self._get_model_version()
+                }
+            )
+            
+            return signal
+            
         except Exception as e:
-            handle_error(e, "MLSignal.generate_signals", logger=self.logger)
-
-        return signals
-
-    def _build_feature_vector(
-        self, latest: pd.Series, trained_columns: List[str], symbol: str
-    ) -> Optional[np.ndarray]:
-        """Build feature vector with validation"""
+            self.logger.error(f"ML signal generation failed: {str(e)}")
+            raise
+    
+    async def _load_model(self) -> None:
         try:
-            fv = []
-            missing_features = []
+            if not self.model_path:
+                raise ModelError("Model path not specified")
+                
+            self._model = joblib.load(self.model_path)
             
-            for col in trained_columns:
-                if col in latest:
-                    fv.append(latest[col])
-                else:
-                    missing_features.append(col)
-                    fv.append(0)
-
-            if missing_features:
-                self.logger.warning(
-                    f"Missing features for {symbol}: {missing_features}"
-                )
-
-            return np.array(fv).reshape(1, -1)
-
+            # Load model metadata
+            metadata_path = self.model_path.replace('.joblib', '_metadata.json')
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                
+            self._feature_names = metadata.get('features', [])
+            if not self._feature_names:
+                raise ModelError("No feature names found in model metadata")
+                
         except Exception as e:
-            handle_error(e, f"MLSignal._build_feature_vector: {symbol}", logger=self.logger)
-            return None
-
-    def _get_ensemble_prediction(
-        self, fv: np.ndarray, rf_model: Any, xgb_model: Optional[Any], weights: Dict[str, float]
-    ) -> Optional[float]:
-        """Get ensemble prediction with proper error handling"""
+            raise ModelError(f"Failed to load model: {str(e)}")
+    
+    def _prepare_features(
+        self,
+        candles: List[Dict[str, Any]]
+    ) -> pd.DataFrame:
+        df = pd.DataFrame(candles)
+        
+        # Calculate technical features
+        df['returns'] = df['close'].pct_change()
+        df['volatility'] = df['returns'].rolling(20).std()
+        df['rsi'] = self._calculate_rsi(df['close'])
+        df['sma_cross'] = (
+            df['close'].rolling(20).mean() > df['close'].rolling(50).mean()
+        ).astype(int)
+        
+        # Ensure all required features are present
+        missing_features = set(self._feature_names) - set(df.columns)
+        if missing_features:
+            raise ValidationError(f"Missing features: {missing_features}")
+        
+        return df[self._feature_names].dropna()
+    
+    def _validate_features(self, features: pd.DataFrame) -> None:
+        if features.empty:
+            raise ValidationError("No valid features generated")
+            
+        if features.isnull().any().any():
+            raise ValidationError("Features contain missing values")
+            
+        if np.isinf(features.values).any():
+            raise ValidationError("Features contain infinite values")
+            
+        # Validate feature ranges
+        for col in features.columns:
+            col_stats = features[col].describe()
+            if col_stats['std'] == 0:
+                raise ValidationError(f"Feature {col} has zero variance")
+    
+    def _generate_prediction(self, features: pd.DataFrame) -> float:
+        # Scale features
+        scaled_features = self.scaler.fit_transform(features)
+        
+        # Generate prediction
         try:
-            prob_rf = rf_model.predict_proba(fv)[0][1]
-            
-            if xgb_model:
-                try:
-                    prob_xgb = xgb_model.predict_proba(fv)[0][1]
-                    return (
-                        prob_rf * weights["rf"] + 
-                        prob_xgb * weights["xgb"]
-                    )
-                except Exception as e:
-                    handle_error(e, "MLSignal._get_ensemble_prediction: XGB", logger=self.logger)
-            
-            return prob_rf
-
+            prediction = self._model.predict_proba(scaled_features)[-1]
+            return prediction[1]  # Probability of positive class
         except Exception as e:
-            handle_error(e, "MLSignal._get_ensemble_prediction: RF", logger=self.logger)
-            return None
-
+            raise ModelError(f"Prediction failed: {str(e)}")
+    
     def _create_signal(
-        self, symbol: str, probability: float, price: float,
-        long_th: float, short_th: float, allow_shorts: bool
-    ) -> Optional[Dict[str, Any]]:
-        """Create signal dictionary with validation"""
-        try:
-            if probability >= long_th:
-                return {
-                    "symbol": symbol,
-                    "direction": "long",
-                    "probability": probability,
-                    "entry_price": price,
-                    "exchange": self.ctx.config.get("exchanges", ["unknown"])[0]
-                }
-            elif allow_shorts and probability <= short_th:
-                return {
-                    "symbol": symbol,
-                    "direction": "short",
-                    "probability": probability,
-                    "entry_price": price,
-                    "exchange": self.ctx.config.get("exchanges", ["unknown"])[0]
-                }
-            return None
-
-        except Exception as e:
-            handle_error(e, f"MLSignal._create_signal: {symbol}", logger=self.logger)
-            return None
+        self,
+        prediction: float,
+        features: pd.DataFrame
+    ) -> Dict[str, Any]:
+        # Define signal thresholds
+        strong_threshold = 0.7
+        weak_threshold = 0.5
+        
+        # Determine signal direction and strength
+        if prediction > strong_threshold:
+            direction = 'long'
+            strength = prediction
+        elif prediction < (1 - strong_threshold):
+            direction = 'short'
+            strength = 1 - prediction
+        elif prediction > weak_threshold:
+            direction = 'long'
+            strength = (prediction - weak_threshold) / (strong_threshold - weak_threshold)
+        else:
+            direction = 'short'
+            strength = (weak_threshold - prediction) / weak_threshold
+        
+        return {
+            'direction': direction,
+            'strength': float(strength),
+            'features': features.iloc[-1].to_dict()
+        }
+    
+    def _get_model_version(self) -> str:
+        if not self.model_path:
+            return 'unknown'
+        return self.model_path.split('/')[-1].replace('.joblib', '')

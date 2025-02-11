@@ -8,11 +8,14 @@ import os
 import sys
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import numpy as np
 from decimal import Decimal
 import random
 import time
+import pandas as pd
+from datetime import datetime
+from dataclasses import dataclass
 
 # Add project root to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +23,7 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from utils.error_handler import handle_error, handle_error_async
+from utils.error_handler import handle_error, handle_error_async, ValidationError
 from database.database import DBConnection, execute_sql
 from signals.trading_types import MarketState, TradingRule
 from signals.storage import store_rule, load_best_rule
@@ -35,6 +38,161 @@ from signals.evaluation import (
     calculate_metrics,
     TradeMetrics
 )
+from database.queries import DatabaseQueries
+
+@dataclass
+class GAParameters:
+    population_size: int = 100
+    generations: int = 50
+    mutation_rate: float = 0.1
+    crossover_rate: float = 0.8
+    elite_size: int = 5
+    tournament_size: int = 3
+    
+    def validate(self) -> None:
+        if not 0 < self.population_size <= 1000:
+            raise ValidationError("Population size must be between 1 and 1000")
+        if not 0 < self.generations <= 200:
+            raise ValidationError("Generations must be between 1 and 200")
+        if not 0 <= self.mutation_rate <= 1:
+            raise ValidationError("Mutation rate must be between 0 and 1")
+        if not 0 <= self.crossover_rate <= 1:
+            raise ValidationError("Crossover rate must be between 0 and 1")
+        if self.elite_size >= self.population_size:
+            raise ValidationError("Elite size must be less than population size")
+
+class GASynergySignal:
+    def __init__(
+        self,
+        db_queries: DatabaseQueries,
+        logger: logging.Logger,
+        params: Optional[GAParameters] = None
+    ):
+        self.db = db_queries
+        self.logger = logger
+        self.params = params or GAParameters()
+        self.params.validate()
+        
+        self._best_individual: Optional[Dict[str, Any]] = None
+        self._population: Optional[List[Dict[str, Any]]] = None
+        
+    async def generate_signal(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_periods: int = 100
+    ) -> Dict[str, Any]:
+        try:
+            # Get historical data
+            candles = await self.db.get_recent_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=lookback_periods
+            )
+            
+            if len(candles) < lookback_periods:
+                raise ValidationError(
+                    f"Insufficient data: got {len(candles)}, need {lookback_periods}"
+                )
+            
+            # Prepare data
+            df = self._prepare_data(candles)
+            
+            # Generate and optimize signals
+            population = self._initialize_population()
+            
+            for generation in range(self.params.generations):
+                fitness_scores = self._evaluate_population(population, df)
+                population = self._evolve_population(population, fitness_scores)
+                
+                best_idx = np.argmax(fitness_scores)
+                self._best_individual = population[best_idx]
+            
+            # Generate final signal
+            signal = self._generate_final_signal(df, self._best_individual)
+            
+            # Store signal
+            await self._store_signal(symbol, signal)
+            
+            return signal
+            
+        except Exception as e:
+            self.logger.error(f"Signal generation failed: {str(e)}")
+            raise
+    
+    def _prepare_data(self, candles: List[Dict[str, Any]]) -> pd.DataFrame:
+        df = pd.DataFrame(candles)
+        
+        # Calculate technical indicators
+        df['sma_20'] = df['close'].rolling(20).mean()
+        df['sma_50'] = df['close'].rolling(50).mean()
+        df['rsi'] = self._calculate_rsi(df['close'])
+        df['volatility'] = df['close'].pct_change().rolling(20).std()
+        
+        return df.dropna()
+    
+    def _initialize_population(self) -> List[Dict[str, Any]]:
+        population = []
+        for _ in range(self.params.population_size):
+            individual = {
+                'sma_weight': np.random.uniform(0, 1),
+                'rsi_weight': np.random.uniform(0, 1),
+                'vol_weight': np.random.uniform(0, 1),
+                'threshold': np.random.uniform(0.3, 0.7)
+            }
+            population.append(individual)
+        return population
+    
+    def _evaluate_population(
+        self,
+        population: List[Dict[str, Any]],
+        df: pd.DataFrame
+    ) -> np.ndarray:
+        fitness_scores = np.zeros(len(population))
+        
+        for i, individual in enumerate(population):
+            signals = self._apply_strategy(df, individual)
+            fitness_scores[i] = self._calculate_fitness(df, signals)
+            
+        return fitness_scores
+    
+    def _evolve_population(
+        self,
+        population: List[Dict[str, Any]],
+        fitness_scores: np.ndarray
+    ) -> List[Dict[str, Any]]:
+        new_population = []
+        
+        # Elitism
+        elite_indices = np.argsort(fitness_scores)[-self.params.elite_size:]
+        new_population.extend([population[i] for i in elite_indices])
+        
+        while len(new_population) < self.params.population_size:
+            if np.random.random() < self.params.crossover_rate:
+                parent1 = self._tournament_select(population, fitness_scores)
+                parent2 = self._tournament_select(population, fitness_scores)
+                child = self._crossover(parent1, parent2)
+            else:
+                child = self._tournament_select(population, fitness_scores).copy()
+            
+            if np.random.random() < self.params.mutation_rate:
+                child = self._mutate(child)
+                
+            new_population.append(child)
+            
+        return new_population
+    
+    async def _store_signal(self, symbol: str, signal: Dict[str, Any]) -> None:
+        await self.db.store_signal(
+            symbol=symbol,
+            signal_type='ga_synergy',
+            direction=signal['direction'],
+            strength=signal['strength'],
+            metadata={
+                'indicators': signal['indicators'],
+                'parameters': signal['parameters']
+            }
+        )
 
 def prepare_market_state(candles: List[Dict[str, Any]], ctx: Any) -> Optional[MarketState]:
     """Create market state with proper validation"""

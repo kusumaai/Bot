@@ -3,15 +3,173 @@
 PyTest configuration and shared fixtures
 """
 import pytest
+import asyncio
 import logging
 import os
 import json
 from decimal import Decimal
-from typing import Any, Dict
+from typing import Any, Dict, AsyncGenerator, List
 from pathlib import Path
+import aiosqlite
+import yaml
 
 from database.database import DBConnection
 from utils.error_handler import handle_error
+from config.settings import Settings
+from database.connection import DatabaseConnection
+from database.queries import DatabaseQueries
+from utils.logger import setup_logging
+from utils.error_handler import ErrorHandler
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create an instance of the default event loop for each test case."""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+@pytest.fixture(scope="session")
+def test_config() -> Dict[str, Any]:
+    """Provide test configuration"""
+    return {
+        'database': {
+            'path': 'test.db',
+            'pool_size': 3,
+            'max_connections': 5
+        },
+        'logging': {
+            'level': 'DEBUG',
+            'file_path': None
+        },
+        'timeframe': '15m',
+        'risk_factor': Decimal('0.01'),
+        'emergency_stop_pct': Decimal('-3.0'),
+        'max_position_size': Decimal('0.1'),
+        'max_positions': 3
+    }
+
+@pytest.fixture(scope="session")
+def logger():
+    """Provide test logger"""
+    return setup_logging("test_logger", level="DEBUG")
+
+@pytest.fixture(scope="session")
+def error_handler(logger):
+    """Provide error handler instance"""
+    return ErrorHandler(logger)
+
+@pytest.fixture(scope="session")
+async def db_connection(test_config, logger) -> AsyncGenerator[DatabaseConnection, None]:
+    """
+    Provide test database connection with temporary database
+    """
+    db_path = Path(test_config['database']['path'])
+    
+    # Create test database
+    connection = DatabaseConnection(
+        db_path=db_path,
+        logger=logger,
+        pool_size=test_config['database']['pool_size'],
+        max_connections=test_config['database']['max_connections']
+    )
+    
+    # Initialize schema
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS candles (
+                symbol TEXT,
+                timeframe TEXT,
+                timestamp INTEGER,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                PRIMARY KEY (symbol, timeframe, timestamp)
+            );
+            
+            CREATE TABLE IF NOT EXISTS trade_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                signal_type TEXT,
+                direction TEXT,
+                timestamp INTEGER,
+                metadata TEXT,
+                created_at INTEGER DEFAULT (strftime('%s', 'now'))
+            );
+            
+            CREATE TABLE IF NOT EXISTS positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                entry_price REAL,
+                size REAL,
+                status TEXT,
+                timestamp INTEGER,
+                metadata TEXT,
+                created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER
+            );
+            
+            CREATE TABLE IF NOT EXISTS error_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                context TEXT,
+                error_type TEXT,
+                error_message TEXT,
+                traceback TEXT,
+                metadata TEXT
+            );
+        """)
+    
+    await connection.initialize()
+    yield connection
+    
+    # Cleanup
+    await connection._pool.join()
+    db_path.unlink(missing_ok=True)
+
+@pytest.fixture
+async def db_queries(db_connection, logger) -> DatabaseQueries:
+    """Provide database queries instance"""
+    return DatabaseQueries(db_connection, logger)
+
+@pytest.fixture
+async def sample_candles() -> List[Dict[str, Any]]:
+    """Provide sample candle data for testing"""
+    return [
+        {
+            'timestamp': 1625097600,
+            'open': 35000.0,
+            'high': 35100.0,
+            'low': 34900.0,
+            'close': 35050.0,
+            'volume': 100.0
+        },
+        {
+            'timestamp': 1625097900,
+            'open': 35050.0,
+            'high': 35200.0,
+            'low': 35000.0,
+            'close': 35150.0,
+            'volume': 150.0
+        }
+    ]
+
+@pytest.fixture
+def mock_settings(test_config) -> Settings:
+    """Provide mock settings instance"""
+    class MockSettings(Settings):
+        def __init__(self, config):
+            self._settings = config
+            
+        def _load_config(self):
+            pass
+            
+        def _validate_settings(self):
+            pass
+    
+    return MockSettings(test_config)
 
 @pytest.fixture
 def test_context() -> Any:

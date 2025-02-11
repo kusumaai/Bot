@@ -10,8 +10,12 @@ from dataclasses import dataclass
 import time
 from datetime import datetime, timedelta
 from utils.numeric import NumericHandler
+import numpy as np
+import pandas as pd
+import logging
 
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, ValidationError
+from .limits import RiskLimits
 
 @dataclass
 class MarketDataValidation:
@@ -24,8 +28,11 @@ class MarketDataValidation:
     error_message: Optional[str] = None
 
 class MarketDataValidation:
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    """Validate market data quality and trading conditions"""
+    
+    def __init__(self, limits: RiskLimits, logger: logging.Logger):
+        self.limits = limits
+        self.logger = logger
         self.nh = NumericHandler()
         self.validation_cache: Dict[str, Dict] = {}
         self.stale_threshold = timedelta(minutes=5)
@@ -68,7 +75,7 @@ class MarketDataValidation:
             return True
             
         except Exception as e:
-            self.ctx.logger.error(f"Market data validation failed: {e}")
+            self.logger.error(f"Market data validation failed: {e}")
             return False
             
     async def _check_volatility(self, 
@@ -83,6 +90,135 @@ class MarketDataValidation:
         
         # Reject if price change > 10% in one update
         return price_change <= Decimal('0.10')
+
+    def validate_candle_data(
+        self,
+        candles: List[Dict[str, Any]],
+        min_candles: int = 20
+    ) -> bool:
+        """
+        Validate candle data quality
+        
+        Args:
+            candles: List of candle dictionaries
+            min_candles: Minimum required candles
+        
+        Returns:
+            bool: True if data is valid
+        
+        Raises:
+            ValidationError: If data quality checks fail
+        """
+        if len(candles) < min_candles:
+            raise ValidationError(
+                f"Insufficient candle data. Got {len(candles)}, need {min_candles}"
+            )
+        
+        # Convert to DataFrame for easier analysis
+        df = pd.DataFrame(candles)
+        
+        # Check for missing values
+        if df.isnull().any().any():
+            raise ValidationError("Found missing values in candle data")
+        
+        # Validate price consistency
+        invalid_prices = (
+            (df['high'] < df['low']) |
+            (df['open'] > df['high']) |
+            (df['open'] < df['low']) |
+            (df['close'] > df['high']) |
+            (df['close'] < df['low'])
+        )
+        
+        if invalid_prices.any():
+            raise ValidationError(
+                f"Found {invalid_prices.sum()} candles with invalid price levels"
+            )
+        
+        # Check for zero volumes
+        if (df['volume'] <= 0).any():
+            raise ValidationError("Found candles with zero or negative volume")
+        
+        return True
+    
+    def validate_liquidity(
+        self,
+        volume: Decimal,
+        price: Decimal,
+        timeframe_minutes: int = 15
+    ) -> bool:
+        """
+        Validate if market has sufficient liquidity
+        
+        Args:
+            volume: Volume in base currency
+            price: Current price
+            timeframe_minutes: Candle timeframe in minutes
+        """
+        daily_volume = volume * (1440 / timeframe_minutes)  # Extrapolate to 24h
+        daily_volume_usd = daily_volume * price
+        
+        if daily_volume_usd < self.limits.min_liquidity:
+            raise ValidationError(
+                f"Insufficient liquidity. "
+                f"Need ${self.limits.min_liquidity}, got ${daily_volume_usd}"
+            )
+        
+        return True
+    
+    def calculate_volatility(
+        self,
+        prices: List[Decimal],
+        window: int = 20
+    ) -> Decimal:
+        """Calculate rolling volatility"""
+        returns = pd.Series(prices).pct_change().dropna()
+        volatility = returns.rolling(window).std().iloc[-1]
+        return Decimal(str(volatility))
+    
+    def validate_volatility(
+        self,
+        prices: List[Decimal],
+        custom_threshold: Optional[Decimal] = None
+    ) -> bool:
+        """
+        Validate if market volatility is within acceptable limits
+        
+        Args:
+            prices: List of historical prices
+            custom_threshold: Optional custom volatility threshold
+        """
+        volatility = self.calculate_volatility(prices)
+        threshold = custom_threshold or self.limits.max_volatility
+        
+        if volatility > threshold:
+            raise ValidationError(
+                f"Excessive volatility. "
+                f"Maximum {threshold}, current {volatility}"
+            )
+        
+        return True
+    
+    def validate_correlation(
+        self,
+        symbol: str,
+        correlations: Dict[str, Decimal]
+    ) -> bool:
+        """
+        Validate correlation with existing positions
+        
+        Args:
+            symbol: Symbol to check
+            correlations: Dictionary of correlations with other assets
+        """
+        for other_symbol, correlation in correlations.items():
+            if abs(correlation) > self.limits.max_correlation:
+                raise ValidationError(
+                    f"Excessive correlation between {symbol} and {other_symbol}: "
+                    f"{correlation} > {self.limits.max_correlation}"
+                )
+        
+        return True
 
 def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
     """Validate market data freshness and integrity"""

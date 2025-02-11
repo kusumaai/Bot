@@ -1,6 +1,8 @@
-# KillaBot Trading System
+# KillaBot 0.1.0
 
-A production-grade cryptocurrency trading bot with advanced risk management and automated trading capabilities.
+A robust automated trading system with advanced safety features, risk management, and data validation.
+
+## Architecture
 
 ## Core Features
 
@@ -17,8 +19,6 @@ A production-grade cryptocurrency trading bot with advanced risk management and 
   - Asynchronous execution with error recovery
   - Real-time position and performance tracking
   - Comprehensive validation checks
-
-
 
 ## Installation
 
@@ -102,21 +102,49 @@ except Exception as e:
 
 ## Development
 
-Code formatting and validation:
-```bash
-# Install development dependencies
-pip install black mypy flake8 pytest-cov
+1. **Code Style**
+- Black formatting
+- Flake8 linting
+- MyPy type checking
+- Pre-commit hooks
 
-# Format code
-black .
-flake8 .
+2. **Testing**
+- Unit tests
+- Integration tests
+- Coverage reports
 
-# Type checking
-mypy .
+3. **Documentation**
+- Code documentation
+- API documentation
+- Testing documentation
 
-# Test coverage
-pytest --cov=./ tests/
-```
+## Safety Features
+
+1. **Circuit Breaker**
+- Maximum drawdown protection
+- Daily loss limits
+- Trade frequency limits
+- Cooldown periods
+
+2. **Risk Management**
+- Position sizing rules
+- Correlation limits
+- Volatility checks
+- Emergency stops
+
+3. **Data Validation**
+- Real-time quality checks
+- Historical data validation
+- Signal verification
+- Market condition monitoring
+
+## Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Implement changes
+4. Add tests
+5. Submit pull request
 
 ## Disclaimer
 
@@ -124,4 +152,10 @@ This software is for educational purposes only. Use at your own risk. The author
 
 ## License
 
-MIT License - see LICENSE file for details. 
+MIT License - see LICENSE file for details.
+
+## CI/CD Integration
+
+1. **GitHub Actions** 
+
+3. **Async Testing** 

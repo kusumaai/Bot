@@ -18,136 +18,85 @@ from utils.error_handler import handle_error
 class CustomFormatter(logging.Formatter):
     """Custom formatter with color support for console output"""
     
-    # Color codes
-    grey = "\x1b[38;21m"
-    blue = "\x1b[38;5;39m"
-    yellow = "\x1b[38;5;226m"
-    red = "\x1b[38;5;196m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-
-    def __init__(self, use_colors: bool = True):
-        super().__init__()
-        self.use_colors = use_colors
-        
-        self.FORMATS = {
-            logging.DEBUG: self.grey + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + self.reset,
-            logging.INFO: self.blue + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + self.reset,
-            logging.WARNING: self.yellow + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + self.reset,
-            logging.ERROR: self.red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + self.reset,
-            logging.CRITICAL: self.bold_red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + self.reset
-        }
-
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[32m',     # Green
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[41m', # Red background
+    }
+    RESET = '\033[0m'
+    
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record with optional color"""
-        try:
-            # Add extra fields if present
-            if hasattr(record, 'extra_data'):
-                record.msg = f"{record.msg} - {json.dumps(record.extra_data)}"
-                
-            log_fmt = self.FORMATS.get(record.levelno)
-            formatter = logging.Formatter(log_fmt, datefmt="%Y-%m-%d %H:%M:%S")
+        if hasattr(sys.stdout, 'isatty') and sys.stdout.isatty():
+            record.color = self.COLORS.get(record.levelname, '')
+            record.reset = self.RESET
+        else:
+            record.color = record.reset = ''
             
-            # Add stack trace for errors
-            if record.levelno >= logging.ERROR:
-                if record.exc_info:
-                    record.msg = f"{record.msg}\n{traceback.format_exception(*record.exc_info)}"
-                    
-            return formatter.format(record)
-            
-        except Exception as e:
-            handle_error(e, "CustomFormatter.format")
-            return str(record.msg)
+        return super().format(record)
 
-def setup_logger(
+def setup_logging(
+    name: str,
     level: str = "INFO",
-    output: str = "stdout",
-    ctx: Optional[Any] = None,
-    name: str = "TradingBot",
-    max_bytes: int = 10485760,  # 10MB
-    backup_count: int = 5
+    log_file: Optional[Path] = None,
+    max_size: int = 10_485_760,  # 10MB
+    backup_count: int = 5,
+    format_string: Optional[str] = None
 ) -> logging.Logger:
     """
-    Set up and return a logger instance with the specified configuration.
+    Configure application logging with rotation and proper formatting
     
     Args:
-        level (str): Log level ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-        output (str): Output destination ("stdout" or file path)
-        ctx (Any): Optional context object with config overrides
-        name (str): Logger name
-        max_bytes (int): Maximum log file size before rotation
-        backup_count (int): Number of backup files to keep
-        
-    Returns:
-        logging.Logger: Configured logger instance
+        name: Logger name
+        level: Logging level
+        log_file: Optional path to log file
+        max_size: Maximum size of log file before rotation
+        backup_count: Number of backup files to keep
+        format_string: Optional custom format string
     """
-    try:
-        # Get config overrides if ctx provided
-        if ctx and hasattr(ctx, "config"):
-            log_cfg = ctx.config.get("log_settings", {})
-            level = log_cfg.get("level", level)
-            output = log_cfg.get("output", output)
-            max_bytes = log_cfg.get("max_bytes", max_bytes)
-            backup_count = log_cfg.get("backup_count", backup_count)
-
-        # Create logger
-        logger = logging.getLogger(name)
-
-        # Set level
-        numeric_level = getattr(logging, level.upper(), logging.INFO)
-        logger.setLevel(numeric_level)
-
-        # Clear existing handlers
-        if logger.hasHandlers():
-            logger.handlers.clear()
-
-        # Create handler
-        if output.lower() == "stdout":
-            handler = logging.StreamHandler(sys.stdout)
-            handler.setFormatter(CustomFormatter())
-        else:
-            # Ensure log directory exists
-            log_dir = os.path.dirname(output)
-            if log_dir:
-                os.makedirs(log_dir, exist_ok=True)
-                
-            # Set up rotating file handler
-            handler = logging.handlers.RotatingFileHandler(
-                output,
-                maxBytes=max_bytes,
-                backupCount=backup_count
-            )
-            handler.setFormatter(logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            ))
-
-        logger.addHandler(handler)
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, level.upper()))
+    
+    # Clear existing handlers
+    logger.handlers.clear()
+    
+    # Default format string
+    if format_string is None:
+        format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    # Console handler with colors
+    console_handler = logging.StreamHandler()
+    console_formatter = CustomFormatter(
+        '%(color)s' + format_string + '%(reset)s'
+    )
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler if specified
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=max_size,
+            backupCount=backup_count
+        )
+        file_formatter = logging.Formatter(format_string)
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
         
-        # Add error file handler for ERROR and CRITICAL
-        if output.lower() != "stdout":
-            error_file = str(Path(output).parent / "error.log")
-            error_handler = logging.handlers.RotatingFileHandler(
-                error_file,
-                maxBytes=max_bytes,
-                backupCount=backup_count
-            )
-            error_handler.setLevel(logging.ERROR)
-            error_handler.setFormatter(logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s\n%(exc_info)s'
-            ))
-            logger.addHandler(error_handler)
-
-        return logger
-
-    except Exception as e:
-        handle_error(e, "setup_logger")
-        # Fallback to basic console logger
-        basic_logger = logging.getLogger(name)
-        basic_logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        basic_logger.addHandler(handler)
-        return basic_logger
+        # Additional error file handler
+        error_file = log_file.parent / f"error_{log_file.name}"
+        error_handler = logging.handlers.RotatingFileHandler(
+            error_file,
+            maxBytes=max_size,
+            backupCount=backup_count
+        )
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(file_formatter)
+        logger.addHandler(error_handler)
+    
+    return logger
 
 def log_trade(logger: logging.Logger, trade_data: Dict[str, Any]) -> None:
     """

@@ -10,12 +10,15 @@ import time
 import sqlite3
 import ccxt
 import logging
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Union
+from datetime import datetime, timedelta
 from decimal import Decimal
+import pandas as pd
+import numpy as np
 
 from utils.logger import setup_logger
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, ValidationError
+from database.queries import DatabaseQueries
 
 # Initialize logger at module level
 logger = setup_logger(name="CandleManager", level="INFO")
@@ -155,6 +158,72 @@ def main():
     except Exception as e:
         handle_error(e, "main", logger=logger)
         sys.exit(1)
+
+class CandleProcessor:
+    def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
+        self.db = db_queries
+        self.logger = logger
+        
+    async def process_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        candles: List[Dict[str, Any]],
+        validate: bool = True
+    ) -> pd.DataFrame:
+        try:
+            df = pd.DataFrame(candles)
+            if validate:
+                self._validate_candle_data(df)
+            
+            df['symbol'] = symbol
+            df['timeframe'] = timeframe
+            df = self._calculate_indicators(df)
+            
+            await self._store_processed_candles(df)
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Candle processing failed: {str(e)}")
+            raise ValidationError(f"Failed to process candles: {str(e)}")
+    
+    def _validate_candle_data(self, df: pd.DataFrame) -> None:
+        required_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_columns if col not in df.columns]
+        if missing_cols:
+            raise ValidationError(f"Missing required columns: {missing_cols}")
+            
+        if df.isnull().any().any():
+            raise ValidationError("Found missing values in candle data")
+            
+        invalid_prices = (
+            (df['high'] < df['low']) |
+            (df['open'] > df['high']) |
+            (df['open'] < df['low']) |
+            (df['close'] > df['high']) |
+            (df['close'] < df['low'])
+        )
+        
+        if invalid_prices.any():
+            raise ValidationError(f"Found {invalid_prices.sum()} invalid price levels")
+            
+        if (df['volume'] <= 0).any():
+            raise ValidationError("Found non-positive volumes")
+            
+        if not df['timestamp'].is_monotonic_increasing:
+            raise ValidationError("Timestamps are not monotonically increasing")
+    
+    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+        df['price_range'] = df['high'] - df['low']
+        df['returns'] = df['close'].pct_change()
+        df['volume_ma'] = df['volume'].rolling(20).mean()
+        df['volatility'] = df['returns'].rolling(20).std()
+        return df
+    
+    async def _store_processed_candles(self, df: pd.DataFrame) -> None:
+        candles = df.to_dict('records')
+        await self.db.store_processed_candles(candles)
 
 if __name__ == '__main__':
     main()

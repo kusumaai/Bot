@@ -31,3 +31,11 @@ Writing Tests:
 2. Integration tests go in tests/integration/
 3. Use fixtures from conftest.py for shared resources
 4. Follow existing test patterns for consistency
+
+# Testing Documentation
+
+## Overview
+
+The testing suite is designed to ensure the reliability and safety of the trading system through comprehensive unit tests, integration tests, and system tests.
+
+## Test Structure

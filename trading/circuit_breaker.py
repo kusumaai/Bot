@@ -23,32 +23,44 @@ from risk.position import Position
 from risk.manager import RiskManager
 from utils.error_handler import handle_error
 
+from database.queries import DatabaseQueries
+from utils.error_handler import CircuitBreakerError
+
 class CircuitBreakerState(Enum):
     NORMAL = "NORMAL"
     WARNING = "WARNING"
     TRIGGERED = "TRIGGERED"
 
 class CircuitBreaker:
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    def __init__(
+        self,
+        db_queries: DatabaseQueries,
+        logger: logging.Logger,
+        max_drawdown: Decimal = Decimal('-0.1'),
+        max_daily_loss: Decimal = Decimal('-0.03'),
+        max_trades_per_hour: int = 10,
+        cooldown_minutes: int = 60
+    ):
+        self.db = db_queries
+        self.logger = logger
+        self.max_drawdown = max_drawdown
+        self.max_daily_loss = max_daily_loss
+        self.max_trades_per_hour = max_trades_per_hour
+        self.cooldown_minutes = cooldown_minutes
+        
+        self._circuit_open = False
+        self._last_reset: Optional[datetime] = None
+        self._trade_counts: Dict[str, List[datetime]] = {}
+        
+        # Initialize with config values
         self.nh = NumericHandler()
         self.state = CircuitBreakerState.NORMAL
         self.last_state_change = time.time()
         self.error_counts: Dict[str, int] = {}
         self.triggered_reasons: List[str] = []
         
-        # Initialize with config values
-        self.max_daily_loss = self.nh.percentage_to_decimal(
-            ctx.config.get('max_daily_loss', '3')
-        )
-        self.warning_threshold = self.nh.percentage_to_decimal(
-            ctx.config.get('warning_threshold', '2')
-        )
-        self.daily_pnl = Decimal('0')
-        self.daily_high_balance = Decimal('0')
-        
         # Load thresholds from config with proper decimal handling
-        self.config = ctx.config.get("circuit_breaker", {})
+        self.config = db_queries.config.get("circuit_breaker", {})
         self.max_drawdown = Decimal(str(self.config.get("max_drawdown_pct", "10"))) / Decimal("100")
         self.max_position_loss = Decimal(str(self.config.get("max_position_loss_pct", "5"))) / Decimal("100")
         self.position_correlation_limit = Decimal(str(self.config.get("position_correlation_limit", "0.7")))
@@ -60,6 +72,141 @@ class CircuitBreaker:
         
         # Start monitoring
         asyncio.create_task(self.monitor_loop())
+
+    async def check_circuit(self, symbol: str) -> bool:
+        """Check if trading should be allowed"""
+        try:
+            if self._circuit_open:
+                if await self._should_reset_circuit():
+                    await self._reset_circuit()
+                else:
+                    raise CircuitBreakerError("Circuit breaker is active")
+            
+            await self._check_conditions(symbol)
+            return True
+            
+        except CircuitBreakerError as e:
+            self.logger.warning(f"Circuit breaker check failed: {str(e)}")
+            raise
+    
+    async def record_trade(self, symbol: str) -> None:
+        """Record a new trade for rate limiting"""
+        now = datetime.utcnow()
+        
+        if symbol not in self._trade_counts:
+            self._trade_counts[symbol] = []
+            
+        self._trade_counts[symbol].append(now)
+        
+        # Clean old trade records
+        hour_ago = now - timedelta(hours=1)
+        self._trade_counts[symbol] = [
+            t for t in self._trade_counts[symbol]
+            if t > hour_ago
+        ]
+    
+    async def _check_conditions(self, symbol: str) -> None:
+        """Check all circuit breaker conditions"""
+        await asyncio.gather(
+            self._check_drawdown(),
+            self._check_daily_loss(),
+            self._check_trade_frequency(symbol)
+        )
+    
+    async def _check_drawdown(self) -> None:
+        """Check current drawdown"""
+        query = """
+            SELECT (
+                (SELECT close FROM candles 
+                 WHERE symbol = ? 
+                 ORDER BY timestamp DESC LIMIT 1) /
+                (SELECT MAX(close) FROM candles 
+                 WHERE symbol = ? AND 
+                 timestamp >= ?) - 1
+            ) as drawdown
+        """
+        
+        day_start = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        
+        result = await self.db.execute(
+            query,
+            [symbol, symbol, day_start.timestamp()],
+            fetch=True
+        )
+        
+        if result and result[0]['drawdown'] < self.max_drawdown:
+            self._circuit_open = True
+            raise CircuitBreakerError(
+                f"Maximum drawdown exceeded: {result[0]['drawdown']}"
+            )
+    
+    async def _check_daily_loss(self) -> None:
+        """Check daily loss limit"""
+        query = """
+            SELECT SUM(
+                CASE 
+                    WHEN direction = 'long' THEN 
+                        (exit_price - entry_price) * size
+                    ELSE 
+                        (entry_price - exit_price) * size
+                END
+            ) / initial_balance as daily_pnl
+            FROM trades
+            WHERE timestamp >= ?
+        """
+        
+        day_start = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        
+        result = await self.db.execute(
+            query,
+            [day_start.timestamp()],
+            fetch=True
+        )
+        
+        if result and result[0]['daily_pnl'] < self.max_daily_loss:
+            self._circuit_open = True
+            raise CircuitBreakerError(
+                f"Maximum daily loss exceeded: {result[0]['daily_pnl']}"
+            )
+    
+    async def _check_trade_frequency(self, symbol: str) -> None:
+        """Check trade frequency limits"""
+        if symbol in self._trade_counts:
+            trades_last_hour = len(self._trade_counts[symbol])
+            if trades_last_hour >= self.max_trades_per_hour:
+                raise CircuitBreakerError(
+                    f"Maximum trades per hour exceeded: {trades_last_hour}"
+                )
+    
+    async def _should_reset_circuit(self) -> bool:
+        """Check if circuit breaker should be reset"""
+        if not self._last_reset:
+            return False
+            
+        cooldown_passed = (
+            datetime.utcnow() - self._last_reset >
+            timedelta(minutes=self.cooldown_minutes)
+        )
+        
+        if not cooldown_passed:
+            return False
+            
+        # Check if conditions have improved
+        try:
+            await self._check_conditions(symbol)
+            return True
+        except CircuitBreakerError:
+            return False
+    
+    async def _reset_circuit(self) -> None:
+        """Reset circuit breaker"""
+        self._circuit_open = False
+        self._last_reset = datetime.utcnow()
+        self.logger.info("Circuit breaker reset")
 
     async def check_conditions(self) -> bool:
         """Check if trading should be allowed"""

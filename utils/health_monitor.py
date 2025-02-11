@@ -17,6 +17,7 @@ from decimal import Decimal
 from utils.error_handler import handle_error, handle_error_async
 from utils.numeric import NumericHandler
 from collections import deque
+import aiohttp
 
 @dataclass
 class ComponentHealth:
@@ -420,3 +421,76 @@ class HealthMonitor:
             if component not in self.latency_history:
                 self.latency_history[component] = deque(maxlen=self.max_history)
             self.latency_history[component].append(latency)
+
+class SystemHealth:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        check_interval: int = 60,
+        alert_threshold: int = 90
+    ):
+        self.logger = logger
+        self.check_interval = check_interval
+        self.alert_threshold = alert_threshold
+        self._running = False
+        self._health_data: Dict[str, Any] = {}
+        self._last_check: Optional[datetime] = None
+        
+    async def start_monitoring(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                await self._check_system_health()
+                await asyncio.sleep(self.check_interval)
+            except Exception as e:
+                self.logger.error(f"Health check failed: {str(e)}")
+                await asyncio.sleep(5)
+    
+    def stop_monitoring(self) -> None:
+        self._running = False
+    
+    async def _check_system_health(self) -> None:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        self._health_data = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'cpu': {
+                'percent': cpu_percent,
+                'alert': cpu_percent > self.alert_threshold
+            },
+            'memory': {
+                'total': memory.total,
+                'available': memory.available,
+                'percent': memory.percent,
+                'alert': memory.percent > self.alert_threshold
+            },
+            'disk': {
+                'total': disk.total,
+                'free': disk.free,
+                'percent': disk.percent,
+                'alert': disk.percent > self.alert_threshold
+            },
+            'process': self._get_process_info()
+        }
+        
+        self._last_check = datetime.utcnow()
+        
+        if any(item.get('alert', False) for item in self._health_data.values()):
+            await self._handle_alerts()
+    
+    def _get_process_info(self) -> Dict[str, Any]:
+        process = psutil.Process()
+        return {
+            'memory_percent': process.memory_percent(),
+            'cpu_percent': process.cpu_percent(),
+            'threads': process.num_threads(),
+            'open_files': len(process.open_files()),
+            'connections': len(process.connections())
+        }
+    
+    async def _handle_alerts(self) -> None:
+        self.logger.warning(
+            f"System health alerts detected: {json.dumps(self._health_data, indent=2)}"
+        )

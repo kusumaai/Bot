@@ -12,6 +12,8 @@ import logging
 from database.database import DBConnection, execute_sql, execute_sql_one
 from utils.error_handler import handle_error
 from signals.trading_types import TradingRule
+from database.queries import DatabaseQueries
+from utils.error_handler import DatabaseError
 
 def store_rule(rule: Dict[str, Any], ctx: Any) -> bool:
     """Store trading rule in database if it's better than current best"""
@@ -124,3 +126,96 @@ def get_rule_stats(ctx: Any) -> Dict[str, Any]:
     except Exception as e:
         handle_error(e, "storage.get_rule_stats", logger=ctx.logger)
         return {}
+
+class SignalStorage:
+    def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
+        self.db = db_queries
+        self.logger = logger
+        
+    async def store_signal(
+        self,
+        symbol: str,
+        signal_type: str,
+        direction: str,
+        strength: float,
+        metadata: Optional[Dict[str, Any]] = None,
+        expiry: Optional[datetime] = None
+    ) -> int:
+        try:
+            query = """
+                INSERT INTO signals (
+                    symbol, signal_type, direction, strength,
+                    metadata, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            
+            params = [
+                symbol,
+                signal_type,
+                direction,
+                strength,
+                json.dumps(metadata) if metadata else None,
+                datetime.utcnow().timestamp(),
+                expiry.timestamp() if expiry else None
+            ]
+            
+            result = await self.db.execute(query, params)
+            return result.lastrowid
+            
+        except Exception as e:
+            raise DatabaseError(f"Failed to store signal: {str(e)}")
+    
+    async def get_active_signals(
+        self,
+        symbol: Optional[str] = None,
+        signal_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        try:
+            conditions = ["expires_at IS NULL OR expires_at > ?"]
+            params = [datetime.utcnow().timestamp()]
+            
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
+            
+            if signal_type:
+                conditions.append("signal_type = ?")
+                params.append(signal_type)
+            
+            query = f"""
+                SELECT * FROM signals
+                WHERE {' AND '.join(conditions)}
+                ORDER BY created_at DESC
+            """
+            
+            return await self.db.execute(query, params, fetch=True)
+            
+        except Exception as e:
+            raise DatabaseError(f"Failed to fetch signals: {str(e)}")
+    
+    async def update_signal_status(
+        self,
+        signal_id: int,
+        status: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        try:
+            query = """
+                UPDATE signals
+                SET status = ?,
+                    metadata = json_patch(metadata, ?),
+                    updated_at = ?
+                WHERE id = ?
+            """
+            
+            params = [
+                status,
+                json.dumps(metadata or {}),
+                datetime.utcnow().timestamp(),
+                signal_id
+            ]
+            
+            await self.db.execute(query, params)
+            
+        except Exception as e:
+            raise DatabaseError(f"Failed to update signal: {str(e)}")

@@ -6,10 +6,16 @@ Handles exchange data ingestion with proper error handling and rate limiting
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 import ccxt.async_support as ccxt
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, ExchangeError
+import logging
+
+from exchanges.exchange_manager import ExchangeManager
+from data.candles import CandleProcessor
+from indicators.quality_monitor import DataQualityMonitor
+from database.queries import DatabaseQueries
 
 # Global cache for exchange instances with timeout management
 class ExchangeCache:
@@ -155,3 +161,83 @@ async def fetch_ohlcv(symbol: str, timeframe: str, limit: int, ctx: Any) -> List
             await asyncio.sleep(retry_delay * attempt)  # Exponential backoff
 
     return []
+
+class ExchangeDataIngestion:
+    def __init__(
+        self,
+        exchange: ExchangeManager,
+        db_queries: DatabaseQueries,
+        logger: logging.Logger,
+        batch_size: int = 100
+    ):
+        self.exchange = exchange
+        self.db = db_queries
+        self.logger = logger
+        self.batch_size = batch_size
+        self.processor = CandleProcessor(db_queries, logger)
+        self.quality_monitor = DataQualityMonitor(logger)
+        
+        self._running = False
+        self._last_fetch: Dict[str, datetime] = {}
+        
+    async def start_ingestion(
+        self,
+        symbols: List[str],
+        timeframe: str,
+        interval: int = 60
+    ) -> None:
+        self._running = True
+        while self._running:
+            try:
+                tasks = [
+                    self._ingest_symbol_data(symbol, timeframe)
+                    for symbol in symbols
+                ]
+                await asyncio.gather(*tasks)
+                await asyncio.sleep(interval)
+            except Exception as e:
+                self.logger.error(f"Ingestion error: {str(e)}")
+                await asyncio.sleep(5)  # Brief pause on error
+    
+    def stop_ingestion(self) -> None:
+        self._running = False
+    
+    async def _ingest_symbol_data(
+        self,
+        symbol: str,
+        timeframe: str
+    ) -> None:
+        try:
+            now = datetime.utcnow()
+            last_fetch = self._last_fetch.get(symbol)
+            
+            if last_fetch and (now - last_fetch) < timedelta(minutes=1):
+                return
+                
+            candles = await self.exchange.fetch_ohlcv(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=self.batch_size
+            )
+            
+            if not candles:
+                return
+                
+            df = await self.processor.process_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                candles=candles
+            )
+            
+            quality_result = self.quality_monitor.check_data_quality(symbol, df)
+            if quality_result['issues']:
+                self.logger.warning(
+                    f"Data quality issues for {symbol}: {quality_result['issues']}"
+                )
+            
+            self._last_fetch[symbol] = now
+            
+        except ExchangeError as e:
+            self.logger.error(f"Exchange error for {symbol}: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Ingestion error for {symbol}: {str(e)}")
