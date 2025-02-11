@@ -6,13 +6,15 @@ Centralized error handling utility
 
 import logging
 import traceback
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, TYPE_CHECKING
 from datetime import datetime
 import json
 import asyncio
 from pathlib import Path
 
-from database.database import DBConnection
+if TYPE_CHECKING:
+    from database.database import DBConnection
+
 
 # Global connection pool
 _db_pool: Optional[str] = None
@@ -33,7 +35,13 @@ class DatabaseError(ApplicationError):
 class ExchangeError(ApplicationError):
     """Exchange interaction errors"""
     pass
+class ModelError(ApplicationError):
+    """ML model-related errors"""
+    pass
 
+class CircuitBreakerError(ApplicationError):
+    """Circuit breaker errors"""
+    pass
 class ValidationError(ApplicationError):
     """Data validation errors"""
     pass
@@ -43,7 +51,7 @@ class ErrorHandler:
     
     def __init__(
         self,
-        logger: logging.Logger,
+        logger: logging.Logger, 
         db_connection: Optional['DBConnection'] = None
     ):
         self.logger = logger
@@ -207,6 +215,7 @@ async def handle_error_async(
     # Store error in database for monitoring
     if _db_pool:
         try:
+            from database.database import DBConnection
             async with DBConnection(_db_pool) as conn:
                 await conn.execute_sql(
                     """INSERT INTO error_log 
