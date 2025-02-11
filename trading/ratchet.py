@@ -4,12 +4,15 @@ Module: trading/ratchet.py
 Production-ready ratchet stop system with guaranteed execution
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
 import numpy as np
 from decimal import Decimal
 import time
 import asyncio
+
+from risk.limits import RiskLimits
+from risk.position import Position
 
 @dataclass
 class RatchetState:

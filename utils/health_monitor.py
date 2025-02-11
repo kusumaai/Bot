@@ -11,7 +11,10 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import json
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import logging
+from decimal import Decimal
+from risk.limits import RiskLimits
 
 @dataclass
 class ComponentHealth:
@@ -21,9 +24,55 @@ class ComponentHealth:
     error_count: int
     last_error: Optional[str]
 
+@dataclass
+class TradingContext:
+    # System
+    config: Dict[str, Any]
+    logger: logging.Logger
+    db_pool: Any
+    
+    # Trading
+    exchange: Any
+    risk_manager: 'RiskManager'
+    market_data: 'MarketData'
+    
+    # State
+    running: bool = True
+    initialized: bool = False
+    
+    # Performance
+    start_time: float = field(default_factory=time.time)
+    last_update: float = field(default_factory=time.time)
+
+@dataclass
+class HealthStatus:
+    timestamp: float
+    is_healthy: bool
+    warnings: List[str]
+    errors: List[str]
+
+class RiskValidator:
+    def __init__(self, limits: RiskLimits):
+        self.limits = limits
+        
+    def validate_all(self) -> Dict[str, bool]:
+        return {
+            "position_size": self.validate_position_size(),
+            "leverage": self.validate_leverage(),
+            "correlation": self.validate_correlation(),
+            "drawdown": self.validate_drawdown()
+        }
+
 class HealthMonitor:
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    def __init__(self, risk_limits: RiskLimits, logger: logging.Logger):
+        self.risk_limits = risk_limits
+        self.logger = logger
+        self.status = HealthStatus(
+            timestamp=time.time(),
+            is_healthy=True,
+            warnings=[],
+            errors=[]
+        )
         self.start_time = time.time()
         self.last_heartbeat = self.start_time
         
@@ -41,9 +90,9 @@ class HealthMonitor:
         self.error_window = timedelta(minutes=5)
         
         # System metrics
-        self.memory_threshold = ctx.config.get("memory_threshold_pct", 90)
-        self.disk_threshold = ctx.config.get("disk_threshold_pct", 90)
-        self.cpu_threshold = ctx.config.get("cpu_threshold_pct", 80)
+        self.memory_threshold = self.risk_limits.config.get("memory_threshold_pct", 90)
+        self.disk_threshold = self.risk_limits.config.get("disk_threshold_pct", 90)
+        self.cpu_threshold = self.risk_limits.config.get("cpu_threshold_pct", 80)
         
         # Degradation tracking
         self.latency_baseline: Dict[str, float] = {}
@@ -94,7 +143,7 @@ class HealthMonitor:
         # Check for degradation
         if component in self.latency_baseline:
             if latency > self.latency_baseline[component] * self.degradation_threshold:
-                self.ctx.logger.warning(
+                self.logger.warning(
                     f"Performance degradation detected for {component}: "
                     f"Current={latency:.3f}s, Baseline={self.latency_baseline[component]:.3f}s"
                 )
@@ -103,7 +152,7 @@ class HealthMonitor:
         """Check database connectivity"""
         start = time.time()
         try:
-            with self.ctx.db_pool.connection() as conn:
+            with self.db_pool.connection() as conn:
                 conn.execute("SELECT 1")
             return True, time.time() - start, None
         except Exception as e:
@@ -113,7 +162,7 @@ class HealthMonitor:
         """Check exchange connectivity"""
         start = time.time()
         try:
-            await self.ctx.exchange_interface.ping()
+            await self.exchange_interface.ping()
             return True, time.time() - start, None
         except Exception as e:
             return False, time.time() - start, str(e)
@@ -137,7 +186,7 @@ class HealthMonitor:
         """Check position manager health"""
         start = time.time()
         try:
-            status = self.ctx.position_manager.get_portfolio_status()
+            status = self.position_manager.get_portfolio_status()
             if not status:
                 return False, time.time() - start, "Failed to get portfolio status"
             return True, time.time() - start, None
@@ -149,7 +198,7 @@ class HealthMonitor:
         start = time.time()
         try:
             # Verify recent orders are being tracked
-            recent = self.ctx.order_manager.get_recent_orders()
+            recent = self.order_manager.get_recent_orders()
             if recent is None:
                 return False, time.time() - start, "Failed to get recent orders"
             return True, time.time() - start, None
@@ -165,7 +214,7 @@ class HealthMonitor:
                 self.update_component('database', db_healthy, db_latency, db_error)
 
                 # Check exchange if trading enabled
-                if not self.ctx.config.get('paper_mode', True):
+                if not self.config.get('paper_mode', True):
                     ex_healthy, ex_latency, ex_error = await self.check_exchange()
                     self.update_component('exchange', ex_healthy, ex_latency, ex_error)
 
@@ -190,18 +239,18 @@ class HealthMonitor:
                 health_report = self.get_health_report()
                 
                 if not health_report['healthy']:
-                    self.ctx.logger.warning(f"System health check failed: {json.dumps(health_report, indent=2)}")
+                    self.logger.warning(f"System health check failed: {json.dumps(health_report, indent=2)}")
                     
                     # Check if emergency shutdown needed
                     if self.should_emergency_shutdown(health_report):
-                        self.ctx.logger.critical("Health check triggering emergency shutdown")
-                        await self.ctx.error_handler.execute_emergency_shutdown()
+                        self.logger.critical("Health check triggering emergency shutdown")
+                        await self.error_handler.execute_emergency_shutdown()
                         break
 
                 await asyncio.sleep(30)  # Check every 30 seconds
 
             except Exception as e:
-                self.ctx.logger.error(f"Error in health monitor loop: {str(e)}")
+                self.logger.error(f"Error in health monitor loop: {str(e)}")
                 await asyncio.sleep(5)  # Back off on error
 
     def should_emergency_shutdown(self, health_report: Dict[str, Any]) -> bool:
@@ -287,7 +336,7 @@ class HealthMonitor:
         report = self.get_health_report()
         
         # Log overall status
-        self.ctx.logger.info(
+        self.logger.info(
             f"Health Status: {'HEALTHY' if report['healthy'] else 'UNHEALTHY'} "
             f"Uptime: {report['uptime']:.1f}s"
         )
@@ -298,7 +347,7 @@ class HealthMonitor:
             if not c['healthy']
         ]
         if unhealthy:
-            self.ctx.logger.warning(f"Unhealthy components: {', '.join(unhealthy)}")
+            self.logger.warning(f"Unhealthy components: {', '.join(unhealthy)}")
             
         # Log performance issues
         degraded = [
@@ -306,11 +355,11 @@ class HealthMonitor:
             if p['degraded']
         ]
         if degraded:
-            self.ctx.logger.warning(f"Degraded components: {', '.join(degraded)}")
+            self.logger.warning(f"Degraded components: {', '.join(degraded)}")
             
         # Log resource usage
         sys = report['system_metrics']
-        self.ctx.logger.info(
+        self.logger.info(
             f"System Resources - Memory: {sys['memory_used_pct']}%, "
             f"Disk: {sys['disk_used_pct']}%, CPU: {sys['cpu_used_pct']}%"
         )

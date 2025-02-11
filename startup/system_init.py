@@ -10,12 +10,19 @@ from typing import Dict, Any, List, Tuple
 from datetime import datetime
 import json
 import os
+from decimal import Decimal
+
+# Local imports
+from risk.limits import RiskLimits
+from risk.manager import RiskManager
+from utils.health_monitor import HealthMonitor
 
 class SystemInitializer:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.startup_checks_passed = False
         self.initialization_errors: List[str] = []
+        self.logger = ctx.logger or logging.getLogger(__name__)
         
     async def initialize_system(self) -> bool:
         """Complete system initialization sequence"""
@@ -450,16 +457,16 @@ class SystemInitializer:
         """Verify risk limits configuration"""
         try:
             required_limits = [
-                ('max_position_size', 0.5),
-                ('max_daily_loss', 1000),
-                ('max_drawdown_pct', 20),
-                ('emergency_stop_pct', 5)
+                ('max_position_size', Decimal('0.5')),
+                ('max_daily_loss', Decimal('1000')),
+                ('max_drawdown_pct', Decimal('20')),
+                ('emergency_stop_pct', Decimal('5'))
             ]
             
             for limit, max_value in required_limits:
-                value = float(self.ctx.config.get(limit, 0))
+                value = Decimal(str(self.ctx.config.get(limit, 0)))
                 if value <= 0 or value > max_value:
-                    self.ctx.logger.error(
+                    self.logger.error(
                         f"Invalid {limit} configuration: {value} "
                         f"(max allowed: {max_value})"
                     )
@@ -468,7 +475,7 @@ class SystemInitializer:
             return True
             
         except Exception as e:
-            self.ctx.logger.error(f"Risk limits check failed: {str(e)}")
+            self.logger.error(f"Risk limits check failed: {str(e)}")
             return False
 
     async def _check_balance_reconciliation(self) -> bool:

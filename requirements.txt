@@ -5,3 +5,4 @@ pandas_ta>=0.3.14b0
 aiohttp>=3.8.1
 scikit-learn>=1.1.0
 pytest
+psutil>=6.1.1

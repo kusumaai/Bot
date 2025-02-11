@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from database.database import DBConnection
 from models.ml_signal import generate_ml_signals
@@ -20,6 +21,10 @@ from trading.math import (
 )
 from execution.position_manager import calculate_position_params
 from trading.ratchet import RatchetManager
+from risk.limits import RiskLimits
+from risk.manager import RiskManager
+from risk.position import Position
+from risk.validation import MarketDataValidation
 
 class ValidationContext:
     """Test context that mimics production environment"""
@@ -27,13 +32,21 @@ class ValidationContext:
         self.logger = logging.getLogger("Validation")
         self.config = {
             "timeframe": "15m",
-            "emergency_stop_pct": -3,
+            "emergency_stop_pct": Decimal("-3"),
             "ratchet_thresholds": [2, 4, 6],
             "ratchet_lock_ins": [1, 2, 3],
-            "kelly_scaling": 0.5,
-            "initial_balance": 10000,
-            "risk_factor": 0.1
+            "kelly_scaling": Decimal("0.5"),
+            "initial_balance": Decimal("10000"),
+            "risk_factor": Decimal("0.1"),
+            "max_position_size": Decimal("0.1"),
+            "max_positions": 3,
+            "max_leverage": Decimal("2.0"),
+            "max_correlation": Decimal("0.7"),
+            "max_drawdown": Decimal("0.1"),
+            "max_daily_loss": Decimal("0.03")
         }
+        self.risk_limits = RiskLimits.from_config(self.config)
+        self.risk_manager = RiskManager(self.config)
         self.db_pool = "data/candles.db"
 
 async def validate_signal_generation(ctx: ValidationContext) -> Dict[str, Any]:
@@ -75,45 +88,34 @@ async def validate_position_sizing(ctx: ValidationContext) -> Dict[str, Any]:
     """Validate position sizing calculations"""
     results = {"positions": [], "warnings": []}
     
-    # Test scenarios
     test_cases = [
         {
-            "balance": 10000,
-            "price": 50000,
-            "volatility": 0.02,
-            "probability": 0.6,
-            "expected_return": 0.03
+            "balance": Decimal("10000"),
+            "price": Decimal("50000"),
+            "volatility": Decimal("0.02"),
+            "probability": Decimal("0.6"),
+            "expected_return": Decimal("0.03")
         },
         {
-            "balance": 5000,
-            "price": 1800,
-            "volatility": 0.015,
-            "probability": 0.55,
-            "expected_return": 0.02
+            "balance": Decimal("5000"),
+            "price": Decimal("1800"),
+            "volatility": Decimal("0.015"),
+            "probability": Decimal("0.55")
         }
     ]
     
     for case in test_cases:
-        ev, win_target, loss_target = calculate_expected_value(
-            case["price"],
-            case["expected_return"],
-            case["probability"],
-            ctx.config["emergency_stop_pct"] / 100,
-            0.001  # Transaction cost
-        )
-        
         kelly = calculate_kelly_fraction(
             case["probability"],
-            win_target,
-            loss_target
+            case["expected_return"],
+            ctx.config["risk_factor"]
         )
         
         position_size = calculate_position_size(
             case["balance"],
-            kelly * ctx.config["kelly_scaling"],
+            kelly,
             case["price"],
-            case["volatility"],
-            ctx.config["risk_factor"]
+            case["volatility"]
         )
         
         position_value = position_size * case["price"]
@@ -126,7 +128,7 @@ async def validate_position_sizing(ctx: ValidationContext) -> Dict[str, Any]:
             "kelly": kelly
         })
         
-        if leverage > 2:
+        if leverage > Decimal("2"):
             results["warnings"].append(
                 f"High leverage warning: {leverage:.2f}x"
             )
