@@ -1,11 +1,11 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import asyncio
 import logging
 from decimal import Decimal
 import pandas as pd
 
 from risk.limits import RiskLimits
-from trading.portfolio_manager import PortfolioManager
+from trading.portfolio import PortfolioManager
 from trading.position import Position
 from trading.ratchet import RatchetManager
 from execution.exchange_interface import ExchangeInterface

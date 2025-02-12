@@ -12,6 +12,7 @@ import ccxt.async_support as ccxt
 from collections import deque
 import logging
 
+from utils import logger
 from utils.error_handler import handle_error, ExchangeError
 from exchanges.exchange_manager import ExchangeManager
 from data.candles import CandleProcessor
