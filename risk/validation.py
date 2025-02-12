@@ -13,6 +13,7 @@ from utils.numeric import NumericHandler
 import numpy as np
 import pandas as pd
 import logging
+import asyncio
 
 from utils.error_handler import handle_error, ValidationError
 from .limits import RiskLimits
@@ -27,69 +28,74 @@ class MarketDataValidation:
     is_valid: bool
     error_message: Optional[str] = None
 
+class MarketDataValidationError(Exception):
+    """Custom exception for market data validation errors."""
+    pass
+
 class MarketDataValidation:
     """Validate market data quality and trading conditions"""
     
-    def __init__(self, limits: RiskLimits, logger: logging.Logger):
+    def __init__(self, limits: Dict[str, Any], logger: Optional[logging.Logger] = None):
         self.limits = limits
-        self.logger = logger
+        self.logger = logger or logging.getLogger(__name__)
         self.nh = NumericHandler()
-        self.validation_cache: Dict[str, Dict] = {}
+        self.validation_cache: Dict[str, Any] = {}
         self.stale_threshold = timedelta(minutes=5)
+        self._lock = asyncio.Lock()
+        self.max_cache_size = 1000  # Prevent unbounded growth
         
-    async def validate_market_data(self, 
-                                 symbol: str, 
-                                 data: Dict) -> bool:
+    async def validate_market_data(
+        self, 
+        symbol: str, 
+        data: Dict[str, Any]
+    ) -> bool:
         """Comprehensive market data validation"""
         try:
-            # Check for required fields
-            required_fields = ['price', 'volume', 'timestamp']
-            if not all(field in data for field in required_fields):
-                return False
-                
-            # Validate timestamp freshness
-            data_time = datetime.fromtimestamp(data['timestamp'])
-            if datetime.utcnow() - data_time > self.stale_threshold:
-                return False
-                
-            # Price sanity checks
-            price = self.nh.to_decimal(data['price'])
-            if price <= Decimal('0'):
-                return False
-                
-            # Volume checks
-            volume = self.nh.to_decimal(data['volume'])
-            if volume <= Decimal('0'):
-                return False
-                
-            # Volatility check
-            if not await self._check_volatility(symbol, price):
-                return False
-                
-            # Cache valid data
+            if not self._check_data_completeness(data):
+                raise MarketDataValidationError("Incomplete market data.")
+            
+            if not await self._check_volatility(symbol, self.nh.to_decimal(data["current_price"])):
+                raise MarketDataValidationError("Volatility check failed.")
+            
+            # Additional validations can be added here
+            
+            # Update validation cache
             self.validation_cache[symbol] = {
-                'last_valid_price': price,
-                'last_valid_time': datetime.utcnow()
+                'last_valid_price': self.nh.to_decimal(data["current_price"])
             }
             
             return True
-            
-        except Exception as e:
+
+        except MarketDataValidationError as e:
             self.logger.error(f"Market data validation failed: {e}")
             return False
-            
-    async def _check_volatility(self, 
-                              symbol: str, 
-                              current_price: Decimal) -> bool:
-        """Check if price movement is within acceptable range"""
-        if symbol not in self.validation_cache:
+        except Exception as e:
+            self.logger.error(f"Unexpected error in validate_market_data: {e}")
+            return False
+
+    def _check_data_completeness(self, data: Dict[str, Any]) -> bool:
+        """Ensure all required fields are present in market data"""
+        required_fields = ["symbol", "current_price", "volume", "timestamp"]
+        for field in required_fields:
+            if field not in data:
+                self.logger.warning(f"Market data missing required field: {field}")
+                return False
+        return True
+
+    async def _check_volatility(self, symbol: str, price: Decimal) -> bool:
+        """Check if price change is within acceptable volatility range"""
+        try:
+            previous_data = self.validation_cache.get(symbol)
+            if previous_data:
+                previous_price = previous_data['last_valid_price']
+                price_change = self.nh.safe_divide(price - previous_price, previous_price)
+                if abs(price_change) > Decimal(str(self.limits.get('max_volatility', '0.1'))):
+                    self.logger.warning(f"Price change for {symbol} exceeds max volatility: {price_change}")
+                    return False
             return True
-            
-        last_price = self.validation_cache[symbol]['last_valid_price']
-        price_change = abs(current_price - last_price) / last_price
-        
-        # Reject if price change > 10% in one update
-        return price_change <= Decimal('0.10')
+        except Exception as e:
+            self.logger.error(f"Error in _check_volatility for {symbol}: {e}")
+            return False
 
     def validate_candle_data(
         self,
@@ -273,8 +279,8 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
         return MarketDataValidation(
             timestamp=timestamp,
             symbol=data["symbol"],
-            price=price,
-            volume=volume,
+            price=Decimal(str(data["price"])),
+            volume=Decimal(str(data["volume"])),
             is_valid=True
         )
 

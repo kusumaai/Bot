@@ -15,6 +15,13 @@ import psutil
 
 from utils.error_handler import handle_error, handle_error_async, init_error_handler
 from database.database import DBConnection, execute_sql
+from utils.health_monitor import HealthMonitor
+from risk.portfolio import PortfolioManager
+from execution.order_manager import OrderManager
+from execution.market_data import MarketData
+from execution.exchange_interface import ExchangeInterface
+from trading.circuit_breaker import CircuitBreaker
+from trading.ratchet_manager import RatchetManager
 
 class SystemInitializer:
     def __init__(self, ctx: Any):
@@ -25,6 +32,14 @@ class SystemInitializer:
         
         # Initialize error handler with database path
         init_error_handler(ctx.db_pool)
+
+        self.health_monitor_class = HealthMonitor
+        self.position_manager_class = PortfolioManager
+        self.order_manager_class = OrderManager
+        self.market_data_class = MarketData
+        self.circuit_breaker_class = CircuitBreaker
+        self.ratchet_manager_class = RatchetManager
+        # Add other component classes as needed
 
     async def initialize_system(self) -> bool:
         """Complete system initialization sequence"""
@@ -92,17 +107,25 @@ class SystemInitializer:
     async def initialize_components(self) -> bool:
         """Initialize system components"""
         try:
-            components = [
-                ('health_monitor', self.ctx.health_monitor_class),
-                ('position_manager', self.ctx.position_manager_class),
-                ('order_manager', self.ctx.order_manager_class),
-                ('risk_manager', self.ctx.risk_manager_class),
-                ('circuit_breaker', self.ctx.circuit_breaker_class)
+            components: List[Tuple[str, Any]] = [
+                ('health_monitor', self.health_monitor_class),
+                ('position_manager', self.position_manager_class),
+                ('order_manager', self.order_manager_class),
+                ('market_data', self.market_data_class),
+                ('circuit_breaker', self.circuit_breaker_class),
+                ('ratchet_manager', self.ratchet_manager_class),
+                # Add other components here
             ]
             
             for name, component_class in components:
                 try:
-                    setattr(self.ctx, name, component_class(self.ctx))
+                    component_instance = component_class(self.ctx)
+                    setattr(self.ctx, name, component_instance)
+                    
+                    # If the component has an async initialize method, await it
+                    if hasattr(component_instance, 'initialize') and asyncio.iscoroutinefunction(component_instance.initialize):
+                        await component_instance.initialize()
+                    
                     self.logger.info(f"Initialized {name}")
                 except Exception as e:
                     self.logger.error(f"Failed to initialize {name}: {str(e)}")
@@ -214,6 +237,7 @@ class SystemInitializer:
                 'market_data': hasattr(self.ctx, 'market_data'),
                 'position_manager': hasattr(self.ctx, 'position_manager'),
                 'risk_manager': hasattr(self.ctx, 'risk_manager'),
-                'circuit_breaker': hasattr(self.ctx, 'circuit_breaker')
+                'circuit_breaker': hasattr(self.ctx, 'circuit_breaker'),
+                'ratchet_manager': hasattr(self.ctx, 'ratchet_manager')
             }
         }

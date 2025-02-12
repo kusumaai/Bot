@@ -101,33 +101,37 @@ class RiskLimits:
         risk_per_trade: Optional[Decimal] = None
     ) -> Decimal:
         """Calculate safe position size based on risk parameters"""
-        risk = risk_per_trade if risk_per_trade else self.risk_factor
-        size = account_size * risk * self.kelly_scaling
-        
-        if size > self.max_position_size:
-            return self.max_position_size
-        elif size < self.min_position_size:
+        try:
+            risk = risk_per_trade if risk_per_trade else self.risk_factor
+            size = account_size * risk * self.kelly_scaling
+            
+            if size > self.max_position_size * account_size:
+                return self.max_position_size * account_size
+            elif size < Decimal('0.0'):
+                return Decimal('0')
+            return size
+        except Exception as e:
+            handle_error(e, "RiskLimits.calculate_position_size", logger=None)
             return Decimal('0')
-        return size
 
     def validate(self) -> Optional[str]:
         """Validate risk limits are within acceptable ranges"""
         try:
             validations: List[Tuple[bool, str]] = [
                 (self.max_position_size <= Decimal('0.5'), 
-                 "max_position_size cannot exceed 0.5"),
+                 "max_position_size cannot exceed 0.5 (50%)"),
                 (self.max_daily_loss <= Decimal('0.03'), 
-                 "max_daily_loss cannot exceed 3%"),
+                 "max_daily_loss cannot exceed 0.03 (3%)"),
                 (self.max_drawdown <= Decimal('0.2'), 
-                 "max_drawdown cannot exceed 20%"),
+                 "max_drawdown cannot exceed 0.2 (20%)"),
                 (self.emergency_stop_pct <= Decimal('0.05'), 
-                 "emergency_stop_pct cannot exceed 5%"),
+                 "emergency_stop_pct cannot exceed 0.05 (5%)"),
                 (self.max_leverage <= Decimal('3'), 
-                 "max_leverage cannot exceed 3x"),
+                 "max_leverage cannot exceed 3 (3x)"),
                 (self.max_correlation <= Decimal('0.8'),
-                 "max_correlation cannot exceed 0.8"),
+                 "max_correlation cannot exceed 0.8 (80%)"),
                 (self.risk_factor <= Decimal('0.2'),
-                 "risk_factor cannot exceed 0.2"),
+                 "risk_factor cannot exceed 0.2 (20%)"),
                 (self.kelly_scaling <= Decimal('1'),
                  "kelly_scaling cannot exceed 1.0")
             ]

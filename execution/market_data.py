@@ -7,10 +7,11 @@ Handles loading and processing of market data with proper error handling
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Tuple, Optional
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 import asyncio
 import time
+import logging
 
 from database.database import DBConnection, execute_sql
 from utils.error_handler import handle_error
@@ -19,13 +20,18 @@ from indicators.quality_monitor import quality_check
 from signals.ga_synergy import prepare_market_state
 from trading.math import calculate_log_returns, estimate_volatility
 from utils.numeric import NumericHandler
+from trading.exceptions import MarketDataError, InvalidMarketDataError
+from execution.exchange_interface import ExchangeInterface
+from risk.exceptions import MarketDataValidationError
 
 DEFAULT_MIN_TRADE_VALUE = Decimal('10.0')  # 10 USDT minimum by default
 
 class MarketData:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.logger = ctx.logger
+        self.logger = ctx.logger or logging.getLogger(__name__)
+        self.exchange_interface = ctx.exchange_interface
+        self.nh = NumericHandler()
         self.min_trade_value = Decimal(str(ctx.config.get("min_trade_value", DEFAULT_MIN_TRADE_VALUE)))
         self.min_sizes = {
             symbol: {
@@ -34,13 +40,13 @@ class MarketData:
             }
             for symbol, data in ctx.config.get("min_trade_sizes", {}).items()
         }
-        self.nh = NumericHandler()
         self.data_cache: Dict[str, pd.DataFrame] = {}
         self.last_update: Dict[str, float] = {}
         self.update_interval = 60  # seconds
         self._lock = asyncio.Lock()
         self.cache_timeout = ctx.config.get("market_data_cache_timeout", 60)  # seconds
         self.CACHE_TTL = 300
+        self.max_cache_size = 1000  # Limit to prevent unbounded growth
 
     async def load_candles(self, symbol: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """Load and process candle data with proper error handling"""
@@ -99,6 +105,12 @@ class MarketData:
                     "market_data": market_data,
                     "timestamp": datetime.now()
                 }
+                
+                # Enforce cache size limit
+                if len(self.data_cache[cache_key]["df"]) > self.max_cache_size:
+                    excess = len(self.data_cache[cache_key]["df"]) - self.max_cache_size
+                    self.data_cache[cache_key]["df"] = self.data_cache[cache_key]["df"].iloc[excess:]
+                    self.logger.info(f"Cache size for {symbol} exceeded. Removed oldest {excess} candles.")
                 
                 return df, market_data
 
@@ -215,8 +227,11 @@ class MarketData:
     async def validate_trade_size(self, symbol: str, size: Decimal) -> bool:
         """Validate if trade size meets minimum requirements"""
         try:
-            market_info = await self.ctx.exchange_interface.fetch_market_info(symbol)
-            min_size = self.nh.to_decimal(market_info['min_size'])
+            market_info = await self.exchange_interface.fetch_market_info(symbol)
+            if not market_info:
+                self.logger.error(f"Market info unavailable for {symbol}.")
+                return False
+            min_size = self.nh.to_decimal(market_info.get('min_size', '0'))
             return size >= min_size
         except Exception as e:
             self.logger.error(f"Size validation failed for {symbol}: {e}")
@@ -273,6 +288,43 @@ class MarketData:
                 self.last_update[symbol] = time.time()
             else:
                 self.logger.error(f"Failed to fetch {symbol}: {result}")
+
+    def _validate_candle(self, candle: Dict[str, Any]) -> bool:
+        required_fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        if not all(field in candle for field in required_fields):
+            return False
+        return True
+
+    async def _fetch_candles_from_exchange(self, symbol: str, timeframe: str, limit: int) -> List[Dict[str, Any]]:
+        # Implementation to fetch candles from the exchange API
+        # Ensure that the API response is validated
+        try:
+            candles = await self.ctx.exchange_manager.get_candles(symbol, timeframe, limit)
+            if not isinstance(candles, list):
+                raise MarketDataError("Candle data is not a list.")
+            return candles
+        except Exception as e:
+            self.logger.error(f"Failed to fetch candles for {symbol}: {e}")
+            raise MarketDataError(f"Failed to fetch candles: {e}")
+
+    async def get_candle(self, symbol: str, index: int) -> Optional[Dict[str, Any]]:
+        async with self._lock:
+            try:
+                if symbol not in self.data_cache:
+                    self.logger.warning(f"No cached data for symbol: {symbol}")
+                    return None
+                if index < 0 or index >= len(self.data_cache[symbol]):
+                    self.logger.warning(f"Index {index} out of range for symbol: {symbol}")
+                    return None
+                return self.data_cache[symbol][index]
+            except Exception as e:
+                self.logger.error(f"Failed to get candle for {symbol} at index {index}: {e}")
+                return None
+
+    async def clear_cache(self) -> None:
+        async with self._lock:
+            self.data_cache.clear()
+            self.logger.info("Cleared all market data caches.")
 
 if __name__ == "__main__":
     import asyncio

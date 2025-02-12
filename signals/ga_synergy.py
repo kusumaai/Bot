@@ -276,78 +276,107 @@ def evolve_population(population: List[TradingRule], ctx: Any) -> List[TradingRu
         handle_error(e, "ga_synergy.evolve_population", logger=ctx.logger)
         return population[:population_size] if population else []
 
-def generate_ga_signals(
-    candles: List[Dict[str, Any]],
-    population: List[TradingRule],
-    ctx: Any
-) -> List[Dict[str, Any]]:
-    """Generate trading signals using enhanced genetic algorithm"""
-    if not candles or not population:
-        ctx.logger.warning("Missing candles or population for GA signal generation")
-        return []
-        
+async def generate_ga_signals(candle: pd.Series) -> Optional[Dict[str, Any]]:
+    """Generate trading signals using Genetic Algorithm"""
     try:
-        # Get GA settings
-        ga_settings = ctx.config.get("ga_settings", {})
-        min_fitness = Decimal(str(ga_settings.get("min_fitness", "0.05")))
-        
-        ctx.logger.info(f"Processing {len(candles)} candles with population size {len(population)}")
-        
-        # Prepare market state with enhanced metrics
-        market_state = prepare_market_state(candles, ctx)
-        if not market_state:
-            ctx.logger.warning("Could not prepare market state")
-            return []
-            
-        # Evolve population
-        ctx.logger.info("Evolving population...")
-        evolved = evolve_population(population, ctx)
-        if not evolved:
-            ctx.logger.warning("Population evolution returned no results")
-            return []
-            
-        # Get best performing rule
-        best_rule = evolved[0]
+        # Load the best performing rule from storage
+        best_rule = await load_best_rule()
         if not best_rule:
-            ctx.logger.warning("No best rule found after evolution")
-            return []
-            
-        # Add fitness logging
-        ctx.logger.info(f"Best rule fitness: {best_rule.fitness}")
+            logger.info("No existing rules found. Initializing population.")
+            population = initialize_population()
+        else:
+            logger.info("Loaded best performing rule.")
+            population = [best_rule]
         
-        # Store if fitness exceeds threshold
-        if best_rule.fitness > min_fitness:
-            ctx.logger.info(f"Storing rule with fitness: {best_rule.fitness}")
-            store_rule(best_rule, ctx)
+        # Evaluate population
+        fitness_scores = await evaluate_population(population, candle)
         
-        # Generate signal from best rule
-        last_candle = candles[-1]
-        direction, signal_meta = evaluate_rule(best_rule, last_candle, market_state)
+        # Selection
+        selected = tournament_select(population, fitness_scores, k=3)
         
-        if not direction or not signal_meta:
-            ctx.logger.info("Rule evaluation produced no signal")
-            return []
-            
-        # Enhanced signal metrics
-        signal = {
-            "symbol": last_candle.get("symbol", ""),
-            "direction": direction,
-            "probability": float(signal_meta["probability"]),
-            "expected_value": float(signal_meta["expected_value"]),
-            "kelly_fraction": float(signal_meta["kelly_fraction"]),
-            "entry_price": float(last_candle["close"]),
-            "atr": float(last_candle.get("ATR_14", 0)),
-            "volatility": float(market_state.volatility),
-            "timestamp": time.time(),
-            "exchange": ctx.config["exchanges"][0] if ctx.config.get("exchanges") else "unknown"
-        }
+        # Crossover
+        offspring = crossover(selected)
         
-        ctx.logger.info(f"Signal details: {signal}")
-        return [signal]
+        # Mutation
+        mutated_offspring = mutate(offspring)
+        
+        # Evaluate offspring
+        offspring_fitness = await evaluate_population(mutated_offspring, candle)
+        
+        # Select next generation
+        population = selected + mutated_offspring
+        fitness_scores = fitness_scores + offspring_fitness
+        population, fitness_scores = select_next_generation(population, fitness_scores)
+        
+        # Update best rule
+        best_index = fitness_scores.index(max(fitness_scores))
+        best_rule = population[best_index]
+        await store_rule(best_rule)
+        
+        # Generate signal based on best rule
+        signal = apply_rule_to_candle(best_rule, candle)
+        return signal
         
     except Exception as e:
-        handle_error(e, "ga_synergy.generate_ga_signals", logger=ctx.logger)
-        return []
+        handle_error(e, "generate_ga_signals", logger=logger)
+        return None
+
+async def evaluate_population(population: List[TradingRule], candle: pd.Series) -> List[float]:
+    """Evaluate the fitness of each rule in the population"""
+    fitness_scores = []
+    for rule in population:
+        metrics = await evaluate_rule(rule, candle)
+        fitness = calculate_fitness(metrics)
+        fitness_scores.append(fitness)
+    return fitness_scores
+
+def calculate_fitness(metrics: TradeMetrics) -> float:
+    """Calculate fitness score based on trade metrics"""
+    # Example fitness calculation: Sharpe Ratio
+    if metrics.volatility == 0:
+        return 0
+    return float(metrics.return_rate / metrics.volatility)
+
+def select_next_generation(
+    population: List[TradingRule], 
+    fitness_scores: List[float],
+    elite_size: int = 2
+) -> Tuple[List[TradingRule], List[float]]:
+    """Select the next generation of rules based on fitness scores"""
+    sorted_population = [rule for _, rule in sorted(zip(fitness_scores, population), key=lambda x: x[0], reverse=True)]
+    sorted_fitness = sorted(fitness_scores, reverse=True)
+    
+    # Elitism: carry forward the top performers
+    next_generation = sorted_population[:elite_size]
+    next_fitness = sorted_fitness[:elite_size]
+    
+    # Select the rest based on fitness (e.g., roulette wheel selection)
+    remaining = len(population) - elite_size
+    selected_indices = random.choices(range(len(population)), weights=sorted_fitness, k=remaining)
+    next_generation.extend([sorted_population[i] for i in selected_indices])
+    next_fitness.extend([sorted_fitness[i] for i in selected_indices])
+    
+    return next_generation, next_fitness
+
+def apply_rule_to_candle(rule: TradingRule, candle: pd.Series) -> Optional[Dict[str, Any]]:
+    """Apply a trading rule to the current candle to generate a signal"""
+    # Example implementation based on rule conditions
+    try:
+        if rule.evaluate(candle):
+            direction = 'buy' if rule.direction == 'long' else 'sell'
+            signal = {
+                "symbol": candle["symbol"],
+                "direction": direction,
+                "probability": float(rule.probability),
+                "potential_profit": float(rule.potential_profit),
+                "potential_loss": float(rule.potential_loss),
+                "price": float(candle["close"])
+            }
+            return signal
+        return None
+    except Exception as e:
+        handle_error(e, "apply_rule_to_candle", logger=logger)
+        return None
 
 async def run_ga_optimization(ctx: Any) -> None:
     """Run GA optimization process with enhanced data handling"""
@@ -389,7 +418,7 @@ async def run_ga_optimization(ctx: Any) -> None:
                 ctx.logger.info(f"Processing {len(rows)} candles...")
                 candles = [dict(row) for row in rows]
                 
-                signals = generate_ga_signals(candles, population, ctx)
+                signals = [generate_ga_signals(pd.Series(candle)) for candle in candles]
                 if signals:
                     ctx.logger.info(f"Generated {len(signals)} signals")
                 else:

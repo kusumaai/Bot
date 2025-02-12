@@ -3,6 +3,7 @@ import asyncio
 from collections import defaultdict
 from utils.data_validator import DataValidator
 from utils.numeric_handler import NumericHandler
+from trading.exceptions import OrderError, InvalidOrderError
 
 class OrderManager:
     def __init__(self, ctx: Any):
@@ -28,18 +29,27 @@ class OrderManager:
 
         async with self._lock:
             try:
+                amount_decimal = self.nh.to_decimal(amount)
+                price_decimal = self.nh.to_decimal(price) if price else None
+
                 order = await self.ctx.exchange_interface.create_order(
                     symbol=symbol,
                     side=side,
-                    amount=self.nh.to_decimal(amount),
-                    price=self.nh.to_decimal(price) if price else None
+                    amount=amount_decimal,
+                    price=price_decimal
                 )
                 
                 if order:
-                    self.open_orders[order['id']] = order
+                    order_id = order.get('id')
+                    if not order_id:
+                        raise OrderError("Order response missing 'id'.")
+                    self.open_orders[order_id] = order
                     self.order_history[symbol].append(order)
                 return order
 
-            except Exception as e:
+            except (OrderError, InvalidOrderError) as e:
                 self.logger.error(f"Order placement failed: {e}")
+                return None
+            except Exception as e:
+                self.logger.error(f"Unexpected error in place_order: {e}")
                 return None 

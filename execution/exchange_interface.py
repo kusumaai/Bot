@@ -146,7 +146,6 @@ class ExchangeInterface:
             side=side,
             amount=Decimal(str(amount)),
             price=Decimal(str(price)) if price else None
-        )
         except Exception as e:
             self.logger.error(f"Failed to place order: {e}")
         return None
@@ -191,29 +190,33 @@ class ExchangeInterface:
             self.ctx.logger.error(f"Order cancellation failed: {e}")
             return False
 
-    async def close_position(self, trade: Dict[str, Any]) -> bool:
-        """Close an open position with proper error handling"""
-        if not self.exchange:
-            return False
-
-        if self.ctx.config.get("paper_mode", False):
-            self.logger.info(f"[PAPER] Closing position for {trade['symbol']}")
-            return True
-
-        try:
-            await self._rate_limit_request()
-            await self.exchange.create_market_order(
-                trade["symbol"],
-                "sell" if trade["side"] == "buy" else "buy",
-                float(trade["amount"]),
-                None,
-                {"reduceOnly": True}
-            )
-            return True
-
-        except Exception as e:
-            handle_error(e, "ExchangeInterface.close_position", logger=self.logger)
-            return False
+    async def close_position(
+        self, 
+        trade_id: str, 
+        exit_price: Decimal
+    ) -> bool:
+        """Close an open position on the exchange"""
+        async with self._lock:
+            try:
+                position = await self.exchange.fetch_position(trade_id)
+                if not position:
+                    self.logger.warning(f"No position found with trade ID: {trade_id}")
+                    return False
+                
+                order = await self.exchange.create_order(
+                    symbol=position['symbol'],
+                    side='SELL' if position['direction'] == 'BUY' else 'BUY',
+                    type='MARKET',
+                    amount=str(position['size']),
+                    price=None
+                )
+                
+                self.logger.info(f"Position {trade_id} closed: {order}")
+                return True
+            except Exception as e:
+                self.logger.error(f"Failed to close position {trade_id}: {e}")
+                handle_error(e, "ExchangeInterface.close_position", logger=self.logger)
+                return False
 
     async def fetch_balance(self) -> Optional[Dict[str, Decimal]]:
         """Fetch account balance with proper error handling"""
@@ -441,3 +444,20 @@ class ExchangeInterface:
         except Exception as e:
             self.logger.error(f"Failed to fetch OHLCV data: {e}")
             return []
+
+    async def get_current_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Fetch current market data for a given symbol"""
+        try:
+            ticker = await self.fetch_ticker(symbol)
+            if not ticker:
+                return None
+            return {
+                "symbol": symbol,
+                "current_price": ticker.get("last", "0"),
+                "volume": ticker.get("baseVolume", "0"),
+                "timestamp": ticker.get("timestamp", 0)
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get current market data for {symbol}: {e}")
+            handle_error(e, "ExchangeInterface.get_current_market_data", logger=self.logger)
+            return None

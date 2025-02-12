@@ -7,15 +7,17 @@ Production-ready ratchet stop system with guaranteed execution
 from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
 import numpy as np
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, DivisionByZero
 import time
 import asyncio
 from datetime import datetime
+import logging
 
 from risk.limits import RiskLimits
 from risk.position import Position
 from utils.error_handler import handle_error
 from utils.numeric import NumericHandler
+from trading.exceptions import RatchetError
 
 @dataclass
 class RatchetState:
@@ -37,8 +39,9 @@ class RatchetManager:
         self.ctx = ctx
         self.logger = ctx.logger
         self._lock = asyncio.Lock()
-        self.nh = NumericHandler()
         self.ratchets: Dict[str, Dict[str, Any]] = {}
+        self.nh = NumericHandler()
+        self.max_ratchets = 1000  # Limit to prevent unbounded growth
         
         # Load thresholds from config
         self.thresholds = [
@@ -86,42 +89,74 @@ class RatchetManager:
     ) -> Optional[Decimal]:
         async with self._lock:
             try:
+                if not isinstance(symbol, str):
+                    raise RatchetError("Symbol must be a string.")
+
+                if not isinstance(current_price, Decimal) or current_price <= Decimal('0'):
+                    raise RatchetError("Invalid current price.")
+
+                if 'entry_price' not in position:
+                    raise RatchetError("Position missing 'entry_price'.")
+
                 if symbol not in self.ratchets:
+                    entry_price = self.nh.to_decimal(position['entry_price'])
+                    if entry_price <= Decimal('0'):
+                        raise RatchetError("Invalid entry price in position.")
                     self.ratchets[symbol] = {
-                        'entry_price': self.nh.to_decimal(str(position['entry_price'])),
+                        'entry_price': entry_price,
                         'current_level': 0,
                         'stop_loss': None
                     }
 
                 ratchet = self.ratchets[symbol]
-                profit_pct = self.nh.safe_divide(
-                    current_price - ratchet['entry_price'],
-                    ratchet['entry_price']
-                )
+                entry_price = ratchet['entry_price']
+                try:
+                    profit_pct = self.nh.safe_divide(
+                        current_price - entry_price,
+                        entry_price
+                    )
+                except DivisionByZero:
+                    raise RatchetError("Division by zero in profit percentage calculation.")
 
-                return await self._check_ratchet_levels(symbol, profit_pct)
+                # Check and update ratchet levels
+                new_level = await self._check_ratchet_levels(symbol, profit_pct)
+                return new_level
 
-            except Exception as e:
+            except (RatchetError, InvalidOperation, TypeError) as e:
                 self.logger.error(f"Ratchet update failed: {e}")
+                return None
+            except Exception as e:
+                self.logger.error(f"Unexpected error in update_position_ratchet: {e}")
                 return None
     
     async def _check_ratchet_levels(self, symbol: str, profit_pct: Decimal) -> Optional[Decimal]:
-        """Check ratchet levels and return new stop loss if applicable"""
-        ratchet = self.ratchets[symbol]
-        current_level = ratchet['current_level']
-        
-        # Check if we've hit next threshold
-        while (current_level < len(self.thresholds) and 
-               profit_pct >= self.thresholds[current_level]):
-            # Move stop loss to lock in profits
-            new_stop = ratchet['entry_price'] * (Decimal('1') + self.lock_ins[current_level])
-            if new_stop > ratchet['stop_loss']:
-                ratchet['stop_loss'] = new_stop
-                ratchet['current_level'] = current_level + 1
-                await self._log_stop_update(ratchet, new_stop)
-            current_level += 1
-            
-        return ratchet['stop_loss']
+        try:
+            ratchet = self.ratchets[symbol]
+            # Example logic: Increment ratchet level if profit_pct exceeds 5%
+            if profit_pct >= Decimal('0.05'):
+                ratchet['current_level'] += 1
+                self.logger.info(f"Ratchet level for {symbol} increased to {ratchet['current_level']}.")
+
+                # Example stop_loss adjustment based on ratchet level
+                ratchet['stop_loss'] = self.nh.safe_divide(
+                    self.nh.to_decimal('1.0'),
+                    Decimal('1.0') + (Decimal('0.01') * ratchet['current_level'])
+                ) * ratchet['entry_price']
+
+                return ratchet['current_level']
+            return None
+        except KeyError:
+            self.logger.error(f"Ratchet for symbol {symbol} does not exist.")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error in _check_ratchet_levels for {symbol}: {e}")
+            return None
+        finally:
+            # Ensure ratchets do not grow unbounded
+            if len(self.ratchets) > self.max_ratchets:
+                oldest_symbol = next(iter(self.ratchets))
+                del self.ratchets[oldest_symbol]
+                self.logger.warning(f"Ratchet for {oldest_symbol} removed to maintain max_ratchets limit.")
     
     async def _log_stop_update(self, ratchet: Dict, new_stop: Decimal) -> None:
         """Log stop loss updates"""

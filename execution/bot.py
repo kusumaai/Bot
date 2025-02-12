@@ -198,26 +198,37 @@ async def execute_trades(ctx: TradingContext, signals: Dict) -> None:
         handle_error(e, "execute_trades", logger=ctx.logger)
 
 async def manage_positions(ctx: TradingContext) -> None:
-    """Manage open positions"""
+    """Manage open positions: update, check for exits, and close if necessary"""
     try:
-        open_trades = await ctx.portfolio_manager.get_open_trades()
+        portfolio_stats = ctx.portfolio_manager.get_portfolio_stats()
+        ctx.logger.info(f"Portfolio Stats: {portfolio_stats}")
         
-        for trade in open_trades:
-            close_reason = await check_trade_closure(ctx, trade)
+        # Fetch latest market data for all positions
+        symbols = list(ctx.portfolio_manager.positions.keys())
+        market_data = {}
+        
+        for symbol in symbols:
+            data = await ctx.market_data.get_current_market_data(symbol)
+            if data:
+                market_data[symbol] = data
+        
+        # Update risk manager with latest market data
+        positions_to_close = ctx.risk_manager.update_positions(market_data)
+        
+        for position_info in positions_to_close:
+            symbol = position_info["symbol"]
+            reason = position_info["reason"]
+            position = position_info["position"]
             
-            if close_reason:
-                ctx.logger.info(
-                    f"🔒 Closing trade {trade['symbol']} - Reason: {close_reason}"
-                )
+            # Close the position on the exchange
+            exit_price = Decimal(str(market_data[symbol]["current_price"]))
+            closed_position = ctx.portfolio_manager.close_position(symbol, exit_price)
+            
+            if closed_position:
+                ctx.logger.info(f"Position closed for {symbol} due to {reason} at price {exit_price}")
+                # Optionally, update Ratchet Manager or other components
+                await ctx.ratchet_manager.finalize_trade(closed_position)
                 
-                result = await ctx.exchange_interface.close_position(trade)
-                if result:
-                    await ctx.portfolio_manager.record_trade_closure(
-                        trade["id"], 
-                        close_reason,
-                        await ctx.exchange_interface.fetch_ticker(trade["symbol"])
-                    )
-
     except Exception as e:
         handle_error(e, "manage_positions", logger=ctx.logger)
 

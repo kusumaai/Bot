@@ -39,6 +39,7 @@ class DataValidator:
         try:
             required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
             if not all(col in df.columns for col in required_cols):
+                self.logger.warning("Missing required fields in market data.")
                 return False
 
             if df.empty or len(df) < 2:
