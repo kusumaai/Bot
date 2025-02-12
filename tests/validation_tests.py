@@ -9,22 +9,50 @@ import pytest
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
+import time
 
-from database.queries import DatabaseError
-from trading.math_handler import MathHandler
+from database.queries import DatabaseError, DatabaseQueries
+from trading.exceptions import PositionUpdateError
 from trading.position import Position
 from risk.manager import RiskManager
-from trading.exceptions import PositionError, InvalidOrderError
 from utils.numeric_handler import NumericHandler
 from utils.error_handler import handle_error, handle_error_async
+from utils.exceptions import PositionError, InvalidOrderError
+from trading.math_handler import MathHandler
+from unittest.mock import MagicMock
 
 @pytest.fixture
 def math_handler():
-    return MathHandler()
+    return NumericHandler()
 
 @pytest.fixture
-def numeric_handler():
-    return NumericHandler()
+def database_queries():
+    db_queries = DatabaseQueries(db_path="path/to/test.db", logger=logging.getLogger("test"))
+    return db_queries
+
+@pytest.fixture
+def risk_manager():
+    mock_ctx = MagicMock()
+    mock_ctx.config = {
+        "max_position_pct": "10",
+        "max_drawdown": "10",
+        "max_daily_loss": "3",
+        "max_positions": 10,
+        "database_path": "path/to/test.db"
+    }
+    mock_ctx.logger = logging.getLogger("test")
+    mock_ctx.db_queries = DatabaseQueries(db_path="path/to/test.db", logger=mock_ctx.logger)
+    return RiskManager(mock_ctx)
+
+@pytest.fixture
+def position():
+    return Position(
+        symbol="BTCUSD",
+        side="buy",
+        entry_price=Decimal("50000"),
+        size=Decimal("1"),
+        timestamp=int(time.time() * 1000)
+    )
 
 @pytest.fixture
 async def database_context():

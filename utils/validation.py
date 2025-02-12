@@ -2,7 +2,10 @@ from typing import Tuple, Optional, Union
 import logging
 import pandas as pd
 from decimal import Decimal
-from utils.numeric import NumericHandler
+from utils.numeric_handler import NumericHandler
+from utils.error_handler import handle_error, ValidationError
+from utils.exceptions import MarketDataValidationError
+from typing import Dict, Any
 
 class DataValidator:
     def __init__(self, logger: logging.Logger):
@@ -21,12 +24,12 @@ class DataValidator:
                 return False, f"Invalid side: {side}"
 
             amount = self.nh.to_decimal(amount)
-            if amount <= Decimal('0'):
+            if amount is None or amount <= Decimal('0'):
                 return False, "Amount must be positive"
 
             if price is not None:
                 price = self.nh.to_decimal(price)
-                if price <= Decimal('0'):
+                if price is None or price <= Decimal('0'):
                     return False, "Price must be positive"
 
             return True, None

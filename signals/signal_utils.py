@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import time
 import logging
 
+from signal_utils import validate_signal
 from utils.error_handler import handle_error
 from risk.validation import validate_market_data, validate_risk_parameters
 

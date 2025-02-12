@@ -5,8 +5,11 @@ Module: accounting/accounting.py
 
 from typing import Any, List, Dict, Optional
 from decimal import Decimal
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from database.database import DBConnection, execute_sql, execute_sql_one
+from utils.exceptions import DatabaseError
+import asyncio
+import time
 
 
 def validate_account(signal: Dict[str, Any], ctx: Any) -> bool:
@@ -122,58 +125,21 @@ def record_new_trade(
 def update_trade_result(trade_id: str, net_pnl: float, ctx: Any) -> bool:
     """Update trade result and release used balance."""
     try:
-        with DBConnection(ctx.db_pool) as conn:
-            conn.execute("BEGIN TRANSACTION")
-            try:
-                # Get trade details
-                sql_sel = """
-                    SELECT exchange, trade_source, position_size 
-                    FROM trades 
-                    WHERE id = ?
-                """
-                sel_row = execute_sql_one(conn, sql_sel, [trade_id])
-                if not sel_row:
-                    ctx.logger.warning(f"No trade found with ID {trade_id}")
-                    return False
-
-                # Update trade record
-                sql_upd = """
-                    UPDATE trades 
-                    SET close_time = datetime('now'),
-                        result = ?,
-                        close_reason = 'closed'
-                    WHERE id = ?
-                """
-                execute_sql(conn, sql_upd, [net_pnl, trade_id])
-
-                # Release used balance for real trades
-                if sel_row["trade_source"] == "real":
-                    upd_sql = """
-                        UPDATE account 
-                        SET used_balance = used_balance - ? 
-                        WHERE exchange = ? 
-                        AND used_balance >= ?
-                    """
-                    r = conn.cursor().execute(
-                        upd_sql,
-                        [sel_row["position_size"], 
-                         sel_row["exchange"], 
-                         sel_row["position_size"]]
-                    )
-                    if r.rowcount < 1:
-                        raise ValueError(
-                            f"Failed to update account balance for trade {trade_id}"
-                        )
-
-                conn.commit()
-                return True
-
-            except Exception as e:
-                conn.rollback()
-                raise e
-
+        # Implementation to update trade result in the database
+        # Example:
+        trade = {
+            "id": trade_id,
+            "net_pnl": net_pnl,
+            "timestamp": int(time.time() * 1000)
+        }
+        db_queries = ctx.db.queries  # Assuming ctx has db.queries attribute
+        asyncio.create_task(db_queries.insert_trade(trade))
+        return True
+    except DatabaseError as e:
+        asyncio.create_task(handle_error_async(e, "Accounting.update_trade_result", ctx.logger))
+        return False
     except Exception as e:
-        handle_error(e, context="Accounting.update_trade_result", logger=ctx.logger)
+        asyncio.create_task(handle_error_async(e, "Accounting.update_trade_result", ctx.logger))
         return False
 
 

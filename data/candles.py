@@ -8,13 +8,14 @@ import os
 import sys
 import time
 import sqlite3
-import ccxt
+import ccxt.async_support as ccxt
 import logging
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import numpy as np
+import asyncio
 
 from utils.logger import setup_logger
 from utils.error_handler import handle_error, ValidationError
@@ -36,80 +37,93 @@ def get_stable_coin_markets(exchange: ccxt.Exchange, base_coins: List[str],
                 selected.append(symbol)
     return selected
 
-def fetch_and_save_candles(
+async def fetch_and_save_candles(
     exchange: ccxt.Exchange,
     symbol: str,
     timeframe: str,
     since: int,
     cursor: sqlite3.Cursor,
-    limit: int = 100,
+    limit: int = 1000,
     period: int = 14
 ) -> int:
-    """Fetch and save candle data with ATR calculation"""
-    state = {"prev_close": None, "atr": None, "tr_list": []}
-    total_inserted = 0
+    """Fetch OHLCV data and save to the database"""
+    try:
+        candles = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+        total = 0
+        for candle in candles:
+            timestamp, open_, high, low, close, volume = candle
+            datetime_str = datetime.utcfromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            atr_14 = calculate_atr(candles, period=period)
+            cursor.execute('''
+                INSERT OR IGNORE INTO candles (symbol, timeframe, timestamp, open, high, low, close, volume, datetime, atr_14, exchange)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                symbol,
+                timeframe,
+                timestamp,
+                open_,
+                high,
+                low,
+                close,
+                volume,
+                datetime_str,
+                atr_14,
+                exchange.name
+            ))
+            total += 1
+        return total
 
-    while True:
+    except ccxt.NetworkError as e:
+        logger.error(f"Network error while fetching candles for {symbol}: {e}")
+        return 0
+    except ccxt.ExchangeError as e:
+        logger.error(f"Exchange error while fetching candles for {symbol}: {e}")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error while fetching candles for {symbol}: {e}")
+        return 0
+
+def calculate_atr(candles: List[List[Any]], period: int = 14) -> Optional[float]:
+    """Calculate the Average True Range (ATR) for the given candles"""
+    try:
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close_prev'] = df['close'].shift(1)
+        df['tr'] = df[['high', 'low', 'close_prev']].apply(
+            lambda row: max(row['high'] - row['low'], 
+                           abs(row['high'] - row['close_prev']) if pd.notnull(row['close_prev']) else 0,
+                           abs(row['low'] - row['close_prev']) if pd.notnull(row['close_prev']) else 0),
+            axis=1
+        )
+        atr = df['tr'].rolling(window=period).mean().iloc[-1]
+        return atr if not np.isnan(atr) else None
+    except Exception as e:
+        logger.error(f"Failed to calculate ATR: {e}")
+        return None
+
+class CandleProcessor:
+    def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
+        self.db_queries = db_queries
+        self.logger = logger
+
+    async def process_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        candles: List[List[Any]]
+    ) -> pd.DataFrame:
+        """Process raw candle data into a DataFrame"""
         try:
-            candles = exchange.fetch_ohlcv(
-                symbol, 
-                timeframe=timeframe, 
-                since=since, 
-                limit=limit
-            )
-            
-            if not candles:
-                break
-
-            for candle in candles:
-                ts, open_val, high, low, close, volume = candle
-                
-                # Calculate ATR
-                if state["prev_close"] is None:
-                    atr = 0.0
-                    state["prev_close"] = close
-                else:
-                    tr = max(
-                        high - low,
-                        abs(high - state["prev_close"]),
-                        abs(low - state["prev_close"])
-                    )
-                    if len(state["tr_list"]) < period:
-                        state["tr_list"].append(tr)
-                        atr = sum(state["tr_list"]) / len(state["tr_list"]) if len(state["tr_list"]) == period else 0.0
-                    else:
-                        atr = (state["atr"] * (period - 1) + tr) / period
-                        state["atr"] = atr
-                    state["prev_close"] = close
-
-                dt_str = datetime.utcfromtimestamp(ts / 1000).strftime('%Y-%m-%d %H:%M:%S')
-                
-                cursor.execute('''
-                    INSERT OR REPLACE INTO candles (
-                        symbol, timeframe, timestamp, open, high, low, close, volume,
-                        datetime, atr_14, exchange
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (symbol, timeframe, ts, open_val, high, low, close, volume, 
-                      dt_str, atr, exchange.id))
-                total_inserted += 1
-
-            logger.info(f"Saved {len(candles)} candles for {symbol} at {timeframe}")
-            since = candles[-1][0] + 1
-            
-            if len(candles) < limit:
-                break
-                
-            time.sleep(exchange.rateLimit / 1000)
-
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('datetime', inplace=True)
+            return df
         except Exception as e:
-            handle_error(e, f"fetch_and_save_candles for {symbol}", logger=logger)
-            time.sleep(exchange.rateLimit / 1000)  # Error backoff
-            break
+            self.logger.error(f"Failed to process candles for {symbol}: {e}")
+            raise ValidationError(f"Failed to process candles for {symbol}: {e}") from e
 
-    return total_inserted
-
-def main():
+async def main():
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
         base_coins = ['BTC', 'ETH']
@@ -124,9 +138,11 @@ def main():
         db_path = os.path.join(script_dir, "candles.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
+        db_connection = DatabaseQueries(db_path, logger=logger)
+
+        async with db_connection.db_connection.get_connection() as conn:
+            cursor = await conn.cursor()
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS candles (
                     symbol TEXT NOT NULL,
                     timeframe TEXT NOT NULL,
@@ -142,15 +158,15 @@ def main():
                     PRIMARY KEY(symbol, timeframe, timestamp)
                 )
             ''')
-            conn.commit()
+            await conn.commit()
 
             for symbol in symbols:
                 for tf in timeframes:
                     logger.info(f"\nFetching candles for {symbol} at {tf} from {since}")
-                    total = fetch_and_save_candles(
+                    total = await fetch_and_save_candles(
                         exchange, symbol, tf, since, cursor, limit=1000, period=14
                     )
-                    conn.commit()
+                    await conn.commit()
                     logger.info(f"Total candles saved for {symbol} at {tf}: {total}")
 
         logger.info("All candles saved successfully.")
@@ -159,71 +175,5 @@ def main():
         handle_error(e, "main", logger=logger)
         sys.exit(1)
 
-class CandleProcessor:
-    def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
-        self.db = db_queries
-        self.logger = logger
-        
-    async def process_candles(
-        self,
-        symbol: str,
-        timeframe: str,
-        candles: List[Dict[str, Any]],
-        validate: bool = True
-    ) -> pd.DataFrame:
-        try:
-            df = pd.DataFrame(candles)
-            if validate:
-                self._validate_candle_data(df)
-            
-            df['symbol'] = symbol
-            df['timeframe'] = timeframe
-            df = self._calculate_indicators(df)
-            
-            await self._store_processed_candles(df)
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Candle processing failed: {str(e)}")
-            raise ValidationError(f"Failed to process candles: {str(e)}")
-    
-    def _validate_candle_data(self, df: pd.DataFrame) -> None:
-        required_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        missing_cols = [col for col in required_columns if col not in df.columns]
-        if missing_cols:
-            raise ValidationError(f"Missing required columns: {missing_cols}")
-            
-        if df.isnull().any().any():
-            raise ValidationError("Found missing values in candle data")
-            
-        invalid_prices = (
-            (df['high'] < df['low']) |
-            (df['open'] > df['high']) |
-            (df['open'] < df['low']) |
-            (df['close'] > df['high']) |
-            (df['close'] < df['low'])
-        )
-        
-        if invalid_prices.any():
-            raise ValidationError(f"Found {invalid_prices.sum()} invalid price levels")
-            
-        if (df['volume'] <= 0).any():
-            raise ValidationError("Found non-positive volumes")
-            
-        if not df['timestamp'].is_monotonic_increasing:
-            raise ValidationError("Timestamps are not monotonically increasing")
-    
-    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-        df['price_range'] = df['high'] - df['low']
-        df['returns'] = df['close'].pct_change()
-        df['volume_ma'] = df['volume'].rolling(20).mean()
-        df['volatility'] = df['returns'].rolling(20).std()
-        return df
-    
-    async def _store_processed_candles(self, df: pd.DataFrame) -> None:
-        candles = df.to_dict('records')
-        await self.db.store_processed_candles(candles)
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    asyncio.run(main())

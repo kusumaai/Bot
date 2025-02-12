@@ -36,66 +36,30 @@ class CustomFormatter(logging.Formatter):
             
         return super().format(record)
 
-def setup_logging(
-    name: str,
-    level: str = "INFO",
-    log_file: Optional[Path] = None,
-    max_size: int = 10_485_760,  # 10MB
-    backup_count: int = 5,
-    format_string: Optional[str] = None
-) -> logging.Logger:
-    """
-    Configure application logging with rotation and proper formatting
-    
-    Args:
-        name: Logger name
-        level: Logging level
-        log_file: Optional path to log file
-        max_size: Maximum size of log file before rotation
-        backup_count: Number of backup files to keep
-        format_string: Optional custom format string
-    """
+def setup_logging(name: str, level: str = "INFO") -> logging.Logger:
+    """Set up logging with console and file handlers."""
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
-    
-    # Clear existing handlers
-    logger.handlers.clear()
-    
-    # Default format string
-    if format_string is None:
-        format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    
-    # Console handler with colors
-    console_handler = logging.StreamHandler()
-    console_formatter = CustomFormatter(
-        '%(color)s' + format_string + '%(reset)s'
-    )
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-    
-    # File handler if specified
-    if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file,
-            maxBytes=max_size,
-            backupCount=backup_count
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.propagate = False  # Prevent double logging
+
+    if not logger.handlers:
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-        file_formatter = logging.Formatter(format_string)
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-        
-        # Additional error file handler
-        error_file = log_file.parent / f"error_{log_file.name}"
-        error_handler = logging.handlers.RotatingFileHandler(
-            error_file,
-            maxBytes=max_size,
-            backupCount=backup_count
-        )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(file_formatter)
-        logger.addHandler(error_handler)
-    
+
+        # Console handler
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+        # File handler
+        log_output = os.getenv("LOG_OUTPUT", "logs/trading_bot.log")
+        os.makedirs(os.path.dirname(log_output), exist_ok=True)
+        fh = logging.FileHandler(log_output)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
     return logger
 
 def log_trade(logger: logging.Logger, trade_data: Dict[str, Any]) -> None:

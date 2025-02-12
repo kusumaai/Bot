@@ -6,49 +6,26 @@ Provides a production-ready context manager for SQLite connections and
 helper functions to execute SQL queries with automatic commits.
 """
 
-import sqlite3
 import logging
 from typing import Any, List, Dict, Optional, Union, Tuple
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
-import asyncio
 import aiosqlite
 import json
 from datetime import datetime
+import asyncio
+
 from utils.numeric_handler import NumericHandler
-from utils.error_handler import handle_error, handle_error_async
-from trading.exceptions import DatabaseError
+from utils.error_handler import handle_error_async, DatabaseError
+from utils.exceptions import DatabaseError
 
 logger = logging.getLogger(__name__)
 
-class DatabaseError(Exception):
-    pass
-
-class DatabaseQueries:
-    """Safe database query implementations"""
-
-    def __init__(self, db_path: str, logger: Optional[logging.Logger] = None):
-        self.db_path = db_path
-        self.logger = logger or logging.getLogger(__name__)
-        self.nh = NumericHandler()
-
-    async def execute(self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()) -> Any:
-        """Execute a SQL query with parameters"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                async with db.execute(query, params) as cursor:
-                    await db.commit()
-                    return await cursor.fetchall()
-        except aiosqlite.Error as e:
-            self.logger.error(f"Database execution error: {e}")
-            raise DatabaseError(f"Database execution error: {e}")
-        except Exception as e:
-            self.logger.error(f"Unexpected error in execute: {e}")
-            raise DatabaseError(f"Unexpected error in execute: {e}")
-
-    async def store_trade(self, trade: Dict[str, Any]) -> bool:
-        """Store a trade in the database"""
+class QueryBuilder:
+    """Placeholder for QueryBuilder class to safely build SQL queries"""
+    
+    def build_insert_trade(self, trade: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+        """Build SQL insert statement for a trade"""
         query = """
             INSERT INTO trades (id, symbol, entry_price, size, side, strategy, metadata)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -62,11 +39,107 @@ class DatabaseQueries:
             trade.get('strategy'),
             json.dumps(trade.get('metadata')) if trade.get('metadata') else None
         )
+        return query, params
+
+@asynccontextmanager
+async def get_db_connection(db_path: str):
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            yield db
+    except aiosqlite.Error as e:
+        logger.error(f"Database connection error: {e}")
+        raise DatabaseError(f"Database connection error: {e}") from e
+
+async def execute_sql(query: str, params: Tuple[Any, ...], db_path: str) -> bool:
+    try:
+        async with get_db_connection(db_path) as db:
+            await db.execute(query, params)
+            await db.commit()
+        return True
+    except aiosqlite.Error as e:
+        handle_error_async(e, "execute_sql", logger)
+        return False
+    except Exception as e:
+        handle_error_async(e, "execute_sql", logger)
+        return False
+
+class DatabaseConnection:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+
+    @asynccontextmanager
+    async def get_connection(self):
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("PRAGMA foreign_keys = ON;")
+                yield conn
+        except aiosqlite.Error as e:
+            logger.error(f"Database connection error: {e}")
+            raise DatabaseError(f"Database connection error: {e}") from e
+
+class DatabaseQueries:
+    """Safe database query implementations"""
+
+    def __init__(self, db_path: str, logger: Optional[logging.Logger] = None):
+        self.db_path = db_path
+        self.logger = logger or logging.getLogger(__name__)
+        self.nh = NumericHandler()
+        self.db_connection = DatabaseConnection(db_path)
+        self._lock = asyncio.Lock()
+        self.query_builder = QueryBuilder()
+
+    async def execute(self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()) -> Any:
+        """Execute a SQL query with parameters"""
+        try:
+            async with self.db_connection.get_connection() as conn:
+                async with conn.execute(query, params) as cursor:
+                    await conn.commit()
+                    result = await cursor.fetchall()
+                    return result
+        except aiosqlite.Error as e:
+            self.logger.error(f"Database execution error: {e}")
+            raise DatabaseError(f"Database execution error: {e}") from e
+        except Exception as e:
+            self.logger.error(f"Unexpected error in execute: {e}")
+            raise DatabaseError(f"Unexpected error in execute: {e}") from e
+
+    async def store_trade(self, trade: Dict[str, Any]) -> bool:
+        """Store a trade in the database"""
+        query, params = self.query_builder.build_insert_trade(trade)
         try:
             await self.execute(query, params)
             return True
         except DatabaseError as e:
             self.logger.error(f"Failed to store trade: {e}")
+            return False
+
+    async def store_ticker(self, symbol: str, ticker: Dict[str, Any]) -> bool:
+        """Store ticker data in the database"""
+        query = """
+            INSERT INTO tickers (symbol, timestamp, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, timestamp) DO UPDATE SET
+                open=excluded.open,
+                high=excluded.high,
+                low=excluded.low,
+                close=excluded.close,
+                volume=excluded.volume
+        """
+        params = (
+            symbol,
+            ticker.get('timestamp'),
+            ticker.get('open'),
+            ticker.get('high'),
+            ticker.get('low'),
+            ticker.get('last'),
+            ticker.get('baseVolume')
+        )
+        try:
+            await self.execute(query, params)
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Failed to store ticker for {symbol}: {e}")
             return False
 
     async def update_position_status(

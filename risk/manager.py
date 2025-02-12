@@ -307,4 +307,12 @@ class RiskManager:
         }
 
     async def get_account_size(self) -> Decimal:
-        return await self.portfolio.get_total_value() 
+        return await self.portfolio.get_total_value()
+
+    async def initialize(self):
+        # Initialize risk manager components
+        await self.portfolio.initialize()
+
+    def _load_position_limits(self) -> Dict[str, Any]:
+        # Implementation to load position limits from configuration
+        return {} 

@@ -3,9 +3,9 @@ import time
 from typing import Any, Dict, Optional
 from decimal import Decimal, InvalidOperation
 from trading.position import Position
-from trading.numeric_handler import NumericHandler
-from trading.exceptions import PositionError, InvalidOrderError
-from database.queries import DatabaseError
+from utils.numeric_handler import NumericHandler
+from utils.exceptions import PositionError, InvalidOrderError, DatabaseError
+from utils.error_handler import handle_error_async
 
 class PositionManager:
     def __init__(self, ctx: Any):
@@ -49,15 +49,8 @@ class PositionManager:
                 self.positions[symbol] = position
                 await self._store_position(position)
                 return position
-            except InvalidOrderError as e:
+            except (PositionError, InvalidOrderError, DatabaseError) as e:
                 self.logger.error(f"Failed to open position: {e}")
-                return None
-            except PositionError as e:
-                self.logger.error(f"Position error: {e}")
-                return None
-            except DatabaseError as e:
-                self.logger.error(f"Database error while opening position: {e}")
-                self.positions.pop(symbol, None)
                 return None
             except Exception as e:
                 self.logger.error(f"Unexpected error in open_position: {e}")
@@ -81,19 +74,18 @@ class PositionManager:
 
     async def _store_position(self, position: Position) -> None:
         try:
-            await self.ctx.database.queries.store_trade({
-                'id': str(position.timestamp),  # Assuming timestamp as unique ID
-                'symbol': position.symbol,
-                'entry_price': str(position.entry_price),
-                'size': str(position.size),
-                'side': position.side,
-                'strategy': 'PositionManager',
-                'metadata': {}
+            await self.ctx.db_queries.insert_trade({
+                "id": position.symbol,
+                "symbol": position.symbol,
+                "entry_price": float(position.entry_price),
+                "size": float(position.size),
+                "side": position.side,
+                "strategy": "manual",
+                "metadata": {}
             })
         except DatabaseError as e:
-            self.logger.error(f"Failed to store position: {e}")
-            async with self._lock:
-                self.positions.pop(position.symbol, None)
+            await handle_error_async(e, "PositionManager._store_position", self.logger)
+            raise
 
     async def _update_position(self, position: Position, closed: bool = False) -> None:
         try:

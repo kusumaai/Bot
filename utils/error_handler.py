@@ -13,6 +13,19 @@ import asyncio
 from pathlib import Path
 import time
 from collections import defaultdict
+from utils.exceptions import (
+    RatchetError,
+    RateLimitExceeded,
+    PositionError,
+    InvalidOrderError,
+    ExchangeError,
+    ExchangeAPIError,
+    PortfolioError,
+    MathError,
+    CircuitBreakerError,
+    MarketDataValidationError,
+    TradingBotError
+)
 
 if TYPE_CHECKING:
     from database.database import DBConnection
@@ -30,13 +43,14 @@ class ApplicationError(Exception):
     """Base exception class for application-specific errors"""
     pass
 
-class DatabaseError(ApplicationError):
-    """Database-related errors"""
-    pass
-
 class ExchangeError(ApplicationError):
     """Exchange interaction errors"""
     pass
+
+class DatabaseError(Exception):
+    """Custom exception for database errors."""
+    pass
+
 class ModelError(ApplicationError):
     """ML model-related errors"""
     pass
@@ -44,104 +58,54 @@ class ModelError(ApplicationError):
 class CircuitBreakerError(ApplicationError):
     """Circuit breaker errors"""
     pass
-class ValidationError(ApplicationError):
-    """Data validation errors"""
+
+class ValidationError(Exception):
+    """Custom exception for validation errors."""
     pass
 
 class ErrorHandler:
-    """Centralized error handling with logging and tracking"""
-    
+    """Handles and logs errors consistently across the application."""
+
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
-        self.error_counts: Dict[str, int] = {}
-        self.critical_error_threshold = 5
 
-    def handle_error(self, error: Exception, context: str, logger: Optional[logging.Logger] = None) -> None:
-        """Handle non-critical errors"""
-        log = logger or self.logger
-        log.error(f"Error in {context}: {error}")
-        key = f"{context}:{type(error).__name__}"
-        self.error_counts[key] = self.error_counts.get(key, 0) + 1
+    async def handle_error(
+        self, 
+        exception: Exception, 
+        context: str, 
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Handle exceptions by logging them with context and metadata."""
+        self.logger.error(
+            f"Error in {context}: {str(exception)}",
+            exc_info=True,
+            extra=metadata or {}
+        )
 
-    async def handle_error_async(self, error: Exception, context: str, logger: Optional[logging.Logger] = None) -> None:
-        """Handle non-critical errors asynchronously"""
-        await asyncio.to_thread(self.handle_error, error, context, logger)
+    def handle_error_sync(
+        self, 
+        exception: Exception, 
+        context: str, 
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Handle synchronous exceptions."""
+        self.logger.error(
+            f"Error in {context}: {str(exception)}",
+            exc_info=True,
+            extra=metadata or {}
+        )
 
-    def handle_critical_error(self, error_detail: Dict[str, Any]) -> None:
-        """Handle critical errors with additional actions"""
-        try:
-            # Notify administrators
-            self._send_notification(error_detail)
-            
-            # Check if circuit breaker should be triggered
-            if self._should_trigger_circuit_breaker(error_detail):
-                self._trigger_circuit_breaker()
-                
-        except Exception as e:
-            self.logger.critical(f"Critical error handler failed: {e}")
-
-    def _send_notification(self, error_detail: Dict[str, Any]) -> None:
-        """Send notification for critical errors"""
-        # Implementation depends on notification system
-        # Example: Send an email or Slack message
-        message = f"Critical Error: {error_detail}"
-        self.logger.critical(f"Sending notification: {message}")
-        # Placeholder for actual notification logic
-
-    def _should_trigger_circuit_breaker(self, error_detail: Dict[str, Any]) -> bool:
-        """Determine if circuit breaker should be triggered"""
-        critical_sources = {'OrderManager', 'RiskManager', 'ExchangeInterface'}
-        source_type = error_detail.get('source', '')
-        error_type = error_detail.get('type', '')
-        key = f"{source_type}:{error_type}"
-        count = self.error_counts.get(key, 0)
-        return key in critical_sources and count >= self.critical_error_threshold
-
-    def _trigger_circuit_breaker(self) -> None:
-        """Trigger the circuit breaker mechanism"""
-        # Implementation depends on system architecture
-        # Example: Update a shared state or notify relevant components
-        self.logger.critical("Circuit breaker triggered due to critical errors.")
-        # Placeholder for actual circuit breaker logic
-
-    def get_error_summary(self) -> Dict[str, Any]:
-        """Get summary of error counts and patterns"""
-        return {
-            'total_errors': sum(self.error_counts.values()),
-            'error_counts': dict(self.error_counts),
-            'last_update': datetime.utcnow().isoformat()
-        }
-
-    async def _store_error(self, error_info: Dict[str, Any]) -> None:
-        """Store error information in database"""
-        query = """
-            INSERT INTO error_log (
-                timestamp, context, error_type, 
-                error_message, traceback, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """
-        params = [
-            error_info['timestamp'],
-            error_info['context'],
-            error_info['type'],
-            error_info['message'],
-            error_info['traceback'],
-            json.dumps(error_info['metadata'])
-        ]
-        
-        async with self.db_connection.get_connection() as conn:
-            await conn.execute(query, params)
-            
-    def get_error_counts(self) -> Dict[str, int]:
-        """Get current error counts by type"""
-        return self.error_counts.copy()
-
-async def handle_error_async(exception: Exception, location: str, logger: logging.Logger):
-    logger.error(f"Error at {location}: {exception}")
-
-def handle_error(exception: Exception, location: str, logger: Optional[logging.Logger] = None):
+async def handle_error_async(e: Exception, context: str, logger: Optional[logging.Logger] = None):
+    """Asynchronously handle errors by logging and performing necessary actions."""
     logger = logger or logging.getLogger(__name__)
-    logger.error(f"Error at {location}: {exception}")
+    logger.error(f"Error in {context}: {e}")
+    # Implement additional asynchronous error handling actions if necessary
+
+def handle_error(e: Exception, context: str, logger: Optional[logging.Logger] = None):
+    """Handle errors synchronously by logging."""
+    logger = logger or logging.getLogger(__name__)
+    logger.error(f"Error in {context}: {e}")
+    # Implement additional synchronous error handling actions if necessary
 
 class ErrorTracker:
     def __init__(self, logger: logging.Logger):
@@ -186,3 +150,13 @@ class ErrorTracker:
                 e for e in self.errors[context]
                 if now - e['timestamp'] < self.CLEANUP_INTERVAL
             ][:self.MAX_ERRORS] 
+
+def handle_error(e: Exception, context: str, logger: logging.Logger) -> None:
+    logger.error(f"Error in {context}: {str(e)}", exc_info=True)
+
+def handle_error_async(e: Exception, context: str, logger: logging.Logger) -> None:
+    logger.error(f"Async error in {context}: {str(e)}", exc_info=True) 
+
+def init_error_handler():
+    """Initialize global error handlers if necessary."""
+    pass  # Implement global error handling setup if required 

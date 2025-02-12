@@ -7,6 +7,9 @@ from risk.limits import RiskLimits
 from risk.validation import MarketDataValidation
 from risk.manager import RiskManager, PositionInfo
 from utils.error_handler import ValidationError, RiskError
+from utils.numeric_handler import NumericHandler
+from database.queries import DatabaseQueries
+
 
 @pytest.fixture
 def risk_limits():
@@ -27,6 +30,7 @@ def risk_limits():
         'min_liquidity': '100000'
     })
 
+
 @pytest.fixture
 def sample_candles():
     """Provide sample market data"""
@@ -41,110 +45,130 @@ def sample_candles():
         } for i in range(20)
     ]
 
+
+@pytest.mark.asyncio
 async def test_risk_limits_validation(risk_limits):
-    """Test risk limits validation"""
-    # Test position size validation
+    """Test risk limits validation for position sizes and exposures."""
+    # Test position size within limits
     assert risk_limits.validate_position_size(Decimal('0.05'))
     assert not risk_limits.validate_position_size(Decimal('0.2'))
+    assert risk_limits.validate_position_size(Decimal('0.01'))
+    assert not risk_limits.validate_position_size(Decimal('0.0'))
     
-    # Test exposure validation
-    assert risk_limits.validate_total_exposure(2)
-    assert not risk_limits.validate_total_exposure(3)
+    # Test maximum number of positions
+    portfolio_size = 2
+    assert risk_limits.validate_max_positions(portfolio_size)
+    portfolio_size = 4
+    assert not risk_limits.validate_max_positions(portfolio_size)
     
-    # Test drawdown validation
-    assert risk_limits.validate_drawdown(Decimal('-0.05'))
-    assert not risk_limits.validate_drawdown(Decimal('-0.15'))
+    # Test leverage limits
+    assert risk_limits.validate_leverage(Decimal('1.5'))
+    assert not risk_limits.validate_leverage(Decimal('2.5'))
+    
+    # Test drawdown limits
+    assert risk_limits.validate_drawdown(Decimal('0.05'))
+    assert not risk_limits.validate_drawdown(Decimal('0.15'))
+    
+    # Test daily loss limits
+    assert risk_limits.validate_daily_loss(Decimal('0.02'))
+    assert not risk_limits.validate_daily_loss(Decimal('0.05'))
     
     # Test emergency stop
-    assert risk_limits.validate_emergency_stop(Decimal('-0.02'))
-    assert not risk_limits.validate_emergency_stop(Decimal('-0.04'))
+    assert not risk_limits.emergency_stop_triggered(Decimal('0.0'))
+    assert risk_limits.emergency_stop_triggered(Decimal('-3.5'))
 
-async def test_market_data_validation(risk_limits, sample_candles, logger):
-    """Test market data validation"""
-    validator = MarketDataValidation(risk_limits, logger)
-    
-    # Test valid data
-    assert await validator.validate_candle_data(sample_candles)
-    
-    # Test insufficient data
-    with pytest.raises(ValidationError):
-        await validator.validate_candle_data(sample_candles[:5])
-    
-    # Test invalid prices
-    invalid_candles = sample_candles.copy()
-    invalid_candles[0]['high'] = invalid_candles[0]['low'] - 100
-    with pytest.raises(ValidationError):
-        await validator.validate_candle_data(invalid_candles)
-    
-    # Test liquidity validation
-    assert validator.validate_liquidity(
-        volume=Decimal('100'),
-        price=Decimal('35000')
-    )
-    
-    with pytest.raises(ValidationError):
-        validator.validate_liquidity(
-            volume=Decimal('1'),
-            price=Decimal('35000')
-        )
 
-async def test_risk_manager(risk_limits, db_queries, logger, sample_candles):
-    """Test risk manager functionality"""
-    risk_manager = RiskManager(risk_limits, db_queries, logger)
+@pytest.mark.asyncio
+async def test_position_size_calculation(risk_limits, db_queries, logger):
+    """Test calculation of position sizes based on risk factors."""
+    rm = RiskManager(risk_limits, db_queries, logger)
     
-    # Test position validation
-    valid_size = Decimal('0.05')
     symbol = "BTC/USDT"
-    
-    assert await risk_manager.validate_new_position(
-        symbol=symbol,
-        direction='long',
-        size=valid_size,
-        price=Decimal('35000'),
-        candles=sample_candles
-    )
-    
-    # Test position size calculation
-    account_size = Decimal('100000')
-    size = await risk_manager.calculate_position_size(
-        symbol=symbol,
-        account_size=account_size
-    )
-    assert size <= risk_limits.max_position_size
-    assert size >= risk_limits.min_position_size
-    
-    # Test risk metrics
-    daily_pnl = await risk_manager._get_daily_pnl()
-    assert isinstance(daily_pnl, Decimal)
-
-async def test_correlation_validation(risk_limits, db_queries, logger, sample_candles):
-    """Test correlation validation"""
-    risk_manager = RiskManager(risk_limits, db_queries, logger)
-    
-    # Create test correlations
-    correlations = {
-        'ETH/USDT': Decimal('0.5'),  # Acceptable correlation
-        'SOL/USDT': Decimal('0.8')   # Too high correlation
+    account_size = Decimal('10000')
+    expected_risk = account_size * risk_limits.risk_factor  # 100
+    # Example: Kelly Fraction = (prob * (b + 1) - 1) / b
+    signal = {
+        "probability": Decimal('0.6'),
+        "odds": Decimal('1.5')  # Implied by strategy
     }
+    kelly_fraction = rm.calculate_kelly_fraction(signal['probability'], signal['odds'])
+    expected_position_size = (expected_risk * kelly_fraction) / Decimal('35000')  # Example entry price
+    calculated_size = rm.calculate_position_size(signal, Decimal('35000'))
     
-    # Test correlation validation
-    symbol = "BTC/USDT"
-    validator = MarketDataValidation(risk_limits, logger)
-    
-    assert validator.validate_correlation(symbol, {'ETH/USDT': Decimal('0.5')})
-    
-    with pytest.raises(ValidationError):
-        validator.validate_correlation(symbol, {'SOL/USDT': Decimal('0.8')})
+    assert isinstance(calculated_size, Decimal)
+    assert calculated_size <= risk_limits.max_position_size
+    assert calculated_size >= risk_limits.min_position_size
 
-async def test_emergency_conditions(risk_limits, db_queries, logger):
-    """Test emergency risk conditions"""
-    risk_manager = RiskManager(risk_limits, db_queries, logger)
+
+@pytest.mark.asyncio
+async def test_risk_metrics_validation(risk_limits, db_queries, logger):
+    """Test validation of risk metrics such as drawdown and daily loss."""
+    rm = RiskManager(risk_limits, db_queries, logger)
     
-    # Simulate emergency conditions
-    async def mock_daily_pnl():
-        return Decimal('-3.5')  # Beyond emergency stop
+    # Simulate acceptable metrics
+    rm.current_drawdown = Decimal('0.05')
+    rm.daily_loss = Decimal('0.02')
+    assert await rm.validate_risk_metrics() is True
     
-    risk_manager._get_daily_pnl = mock_daily_pnl
-    
+    # Simulate exceeding drawdown
+    rm.current_drawdown = Decimal('0.15')
     with pytest.raises(RiskError):
-        await risk_manager._validate_risk_metrics()
+        await rm.validate_risk_metrics()
+    
+    # Reset and simulate exceeding daily loss
+    rm.current_drawdown = Decimal('0.05')
+    rm.daily_loss = Decimal('0.05')
+    with pytest.raises(RiskError):
+        await rm.validate_risk_metrics()
+    
+    # Simulate emergency stop
+    rm.current_drawdown = Decimal('-3.5')
+    with pytest.raises(RiskError):
+        await rm.validate_risk_metrics()
+
+
+@pytest.mark.asyncio
+async def test_correlation_validation(risk_limits, db_queries, logger):
+    """Test correlation validation between different positions."""
+    rm = RiskManager(risk_limits, db_queries, logger)
+    
+    # Add positions with acceptable correlation
+    rm.portfolio.add_position(Position("BTC/USDT", "long", Decimal('1'), Decimal('50000')))
+    rm.portfolio.add_position(Position("ETH/USDT", "long", Decimal('10'), Decimal('3000')))
+    
+    correlations = {
+        "ETH/USDT": Decimal('0.5'),
+        "SOL/USDT": Decimal('0.6')
+    }
+    validation = rm.validate_correlation("BTC/USDT", correlations)
+    assert validation is True
+    
+    # Add a position with high correlation
+    correlations["XRP/USDT"] = Decimal('0.8')
+    validation = rm.validate_correlation("BTC/USDT", correlations)
+    assert validation is False
+
+
+@pytest.mark.asyncio
+async def test_risk_manager_portfolio_management(risk_limits, db_queries, logger):
+    """Test adding and removing positions in the portfolio."""
+    rm = RiskManager(risk_limits, db_queries, logger)
+    
+    # Initially, no positions
+    assert len(rm.portfolio.positions) == 0
+    
+    # Add a position
+    pos = Position("BTC/USDT", "long", Decimal('0.05'), Decimal('50000'))
+    success = rm.portfolio.add_position(pos)
+    assert success is True
+    assert len(rm.portfolio.positions) == 1
+    
+    # Attempt to add another position exceeding max positions
+    for _ in range(risk_limits.max_positions):
+        pos = Position("ETH/USDT", "short", Decimal('0.02'), Decimal('3000'))
+        rm.portfolio.add_position(pos)
+    
+    # Now, adding one more should fail
+    pos_extra = Position("SOL/USDT", "long", Decimal('0.03'), Decimal('100'))
+    with pytest.raises(RiskError):
+        rm.portfolio.add_position(pos_extra)

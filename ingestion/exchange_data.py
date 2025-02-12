@@ -6,12 +6,13 @@ Handles exchange data ingestion with proper error handling and rate limiting
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 import ccxt.async_support as ccxt
-from utils.error_handler import handle_error, ExchangeError
+from collections import deque
 import logging
 
+from utils.error_handler import handle_error, ExchangeError
 from exchanges.exchange_manager import ExchangeManager
 from data.candles import CandleProcessor
 from indicators.quality_monitor import DataQualityMonitor
@@ -42,31 +43,7 @@ class ExchangeCache:
 
 _exchange_cache = ExchangeCache()
 
-class ExchangeInstance:
-    """Represents an exchange instance with rate limiting and error tracking"""
-    def __init__(self, id: str, instance: Any) -> None:
-        self.id = id
-        self.instance = instance
-        self.last_request = 0
-        self.request_count = 0
-        self.error_count = 0
-        self.last_error = None
-
-    async def rate_limit(self) -> None:
-        """Implement rate limiting"""
-        now = time.time()
-        if now - self.last_request >= 1.0:
-            self.request_count = 0
-            self.last_request = now
-        
-        if self.request_count >= 20:  # Default rate limit
-            await asyncio.sleep(1.0)
-            self.request_count = 0
-            self.last_request = time.time()
-        
-        self.request_count += 1
-
-async def get_exchange_instance(eid: str, ctx: Any) -> ExchangeInstance:
+async def get_exchange_instance(eid: str, ctx: Any) -> ExchangeManager:
     """Get or create an exchange instance with proper caching and validation"""
     cached = _exchange_cache.get(eid)
     if cached:
@@ -81,100 +58,53 @@ async def get_exchange_instance(eid: str, ctx: Any) -> ExchangeInstance:
         "timeout": default_timeout
     }
 
-    # Set credentials based on environment variables
+    # Set credentials based on environment variables or configuration
     eid_lower = eid.lower()
     credentials = {
         "kucoin": {
-            "apiKey": "KUCOIN_API_KEY",
-            "secret": "KUCOIN_SECRET",
-            "password": "KUCOIN_PASSWORD"
+            "apiKey": ctx.config.get("kucoin_api_key"),
+            "secret": ctx.config.get("kucoin_secret"),
+            "password": ctx.config.get("kucoin_password")
         },
         "bybit": {
-            "apiKey": "BYBIT_API_KEY",
-            "secret": "BYBIT_SECRET"
+            "apiKey": ctx.config.get("bybit_api_key"),
+            "secret": ctx.config.get("bybit_secret")
         }
-    }.get(eid_lower, {})
+        # Add other exchanges as needed
+    }
 
-    for arg_name, env_key in credentials.items():
-        if env_key in ctx.env:
-            ex_args[arg_name] = ctx.env[env_key]
-
+    exchange_credentials = credentials.get(eid_lower, {})
+    if exchange_credentials:
+        ex_args.update(exchange_credentials)
+    
     try:
-        exchange_class = getattr(ccxt, eid_lower)
-    except AttributeError as e:
-        handle_error(e, f"get_exchange_instance: Unknown exchange '{eid}'", logger=ctx.logger)
-        raise
-
-    try:
-        instance = exchange_class(ex_args)
-        await instance.load_markets()
-        
-        exch = ExchangeInstance(eid, instance)
-        _exchange_cache.set(eid, exch)
-        return exch
-
+        exchange_instance = ExchangeManager(
+            exchange_id=eid_lower,
+            api_key=exchange_credentials.get("apiKey"),
+            api_secret=exchange_credentials.get("secret"),
+            sandbox=ctx.config.get("sandbox", True),
+            logger=ctx.logger
+        )
+        await exchange_instance.initialize()
+        _exchange_cache.set(eid, exchange_instance)
+        return exchange_instance
+    except ExchangeError as e:
+        ctx.logger.error(f"Failed to get exchange instance for {eid}: {e}")
+        raise e
     except Exception as e:
-        handle_error(e, f"get_exchange_instance: Failed to load markets for '{eid}'", logger=ctx.logger)
-        raise
+        ctx.logger.error(f"Unexpected error while getting exchange instance for {eid}: {e}")
+        raise ExchangeError(f"Failed to get exchange instance for {eid}: {e}") from e
 
-async def fetch_ohlcv(symbol: str, timeframe: str, limit: int, ctx: Any) -> List[List[Any]]:
-    """Fetch OHLCV data with proper error handling and validation"""
-    exchanges_config = ctx.config.get("exchanges", [])
-    if not exchanges_config:
-        ctx.logger.error("No exchanges configured. Cannot fetch OHLCV data.")
-        return []
+class ExchangeInstance:
+    """Placeholder for ExchangeInstance class if needed"""
+    pass  # Implement if required
 
-    primary = exchanges_config[0]
-    max_retries = ctx.config.get("exchange_retries", 1)
-    retry_delay = ctx.config.get("retry_delay", 1.0)
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            exch_instance = await get_exchange_instance(primary, ctx)
-            await exch_instance.rate_limit()
-            
-            data = await exch_instance.instance.fetch_ohlcv(symbol, timeframe, limit=limit)
-            
-            # Validate timestamps
-            if data:
-                timestamps = [candle[0] for candle in data]
-                expected_interval = {
-                    '15m': 15 * 60 * 1000,
-                    '1h': 60 * 60 * 1000,
-                    '4h': 4 * 60 * 60 * 1000,
-                    '1d': 24 * 60 * 60 * 1000
-                }.get(timeframe)
-                
-                if expected_interval:
-                    gaps = [t2 - t1 for t1, t2 in zip(timestamps[:-1], timestamps[1:])]
-                    large_gaps = [g for g in gaps if g > expected_interval * 2]
-                    if large_gaps:
-                        ctx.logger.warning(f"Found {len(large_gaps)} large time gaps in {symbol} data")
-            
-            return data
-
-        except Exception as e:
-            handle_error(e, f"fetch_ohlcv for {symbol}, attempt {attempt}", logger=ctx.logger)
-            if attempt == max_retries:
-                ctx.logger.error("Max retries reached. Returning empty OHLCV data.")
-                return []
-            await asyncio.sleep(retry_delay * attempt)  # Exponential backoff
-
-    return []
-
-class ExchangeDataIngestion:
-    def __init__(
-        self,
-        exchange: ExchangeManager,
-        db_queries: DatabaseQueries,
-        logger: logging.Logger,
-        batch_size: int = 100
-    ):
-        self.exchange = exchange
-        self.db = db_queries
-        self.logger = logger
+class IngestionService:
+    def __init__(self, ctx: Any, batch_size: int = 100):
+        self.ctx = ctx
+        self.logger = ctx.logger
         self.batch_size = batch_size
-        self.processor = CandleProcessor(db_queries, logger)
+        self.processor = CandleProcessor(DatabaseQueries(ctx.config.get("database", {}).get("path", "data/trading.db")), logger=self.logger)
         self.quality_monitor = DataQualityMonitor(logger)
         
         self._running = False
@@ -214,7 +144,7 @@ class ExchangeDataIngestion:
             if last_fetch and (now - last_fetch) < timedelta(minutes=1):
                 return
                 
-            candles = await self.exchange.fetch_ohlcv(
+            candles = await self.ctx.exchange_interface.fetch_candles(
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=self.batch_size

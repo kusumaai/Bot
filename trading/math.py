@@ -5,9 +5,11 @@ trading/math.py - Core trading mathematics and relationships
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 from decimal import Decimal, InvalidOperation
-from utils.error_handler import handle_error
+from utils.error_handler import handle_error, handle_error_async
 from utils.numeric_handler import NumericHandler
-from trading.exceptions import MathError
+from utils.exceptions import MathError
+import asyncio
+import logging
 
 def calculate_log_returns(prices: np.ndarray) -> np.ndarray:
     """Calculate logarithmic returns series"""
@@ -16,7 +18,7 @@ def calculate_log_returns(prices: np.ndarray) -> np.ndarray:
             return np.array([])
         return np.log(prices[1:] / prices[:-1])
     except Exception as e:
-        handle_error(e, "math.calculate_log_returns")
+        asyncio.create_task(handle_error_async(e, "math.calculate_log_returns", logging.getLogger(__name__)))
         return np.array([])
 
 def estimate_ar1_coefficient(returns: np.ndarray) -> float:
@@ -142,29 +144,3 @@ def calculate_position_size(
     except Exception as e:
         handle_error(e, "math.calculate_position_size")
         return Decimal("0")
-
-class MathHandler:
-    def __init__(self):
-        self.nh = NumericHandler()
-        self.logger = logging.getLogger(__name__)
-
-    def calculate_kelly_fraction(self, win_prob: Decimal, win_loss_ratio: Decimal) -> Decimal:
-        try:
-            return self.nh.safe_divide(win_prob - (Decimal('1') - win_prob) / win_loss_ratio, Decimal('1'))
-        except (InvalidOperation, DivisionByZero) as e:
-            self.logger.error(f"Error calculating Kelly fraction: {e}")
-            raise MathError(f"Error calculating Kelly fraction: {e}")
-
-    def calculate_position_size(self, account_size: Decimal, risk_per_trade: Decimal, stop_loss: Decimal) -> Decimal:
-        try:
-            return self.nh.safe_divide(account_size * risk_per_trade, stop_loss)
-        except (InvalidOperation, DivisionByZero) as e:
-            self.logger.error(f"Error calculating position size: {e}")
-            raise MathError(f"Error calculating position size: {e}")
-
-    def calculate_expected_value(self, win_prob: Decimal, win_amount: Decimal, loss_amount: Decimal) -> Decimal:
-        try:
-            return (win_prob * win_amount) - ((Decimal('1') - win_prob) * loss_amount)
-        except InvalidOperation as e:
-            self.logger.error(f"Error calculating expected value: {e}")
-            raise MathError(f"Error calculating expected value: {e}")

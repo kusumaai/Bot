@@ -39,6 +39,8 @@ from signals.evaluation import (
     TradeMetrics
 )
 from database.queries import DatabaseQueries
+from models.ga_signal import generate_ga_signals, GASignal
+from utils.exceptions import InvalidOrderError
 
 @dataclass
 class GAParameters:
@@ -276,50 +278,15 @@ def evolve_population(population: List[TradingRule], ctx: Any) -> List[TradingRu
         handle_error(e, "ga_synergy.evolve_population", logger=ctx.logger)
         return population[:population_size] if population else []
 
-async def generate_ga_signals(candle: pd.Series) -> Optional[Dict[str, Any]]:
-    """Generate trading signals using Genetic Algorithm"""
-    try:
-        # Load the best performing rule from storage
-        best_rule = await load_best_rule()
-        if not best_rule:
-            logger.info("No existing rules found. Initializing population.")
-            population = initialize_population()
-        else:
-            logger.info("Loaded best performing rule.")
-            population = [best_rule]
-        
-        # Evaluate population
-        fitness_scores = await evaluate_population(population, candle)
-        
-        # Selection
-        selected = tournament_select(population, fitness_scores, k=3)
-        
-        # Crossover
-        offspring = crossover(selected)
-        
-        # Mutation
-        mutated_offspring = mutate(offspring)
-        
-        # Evaluate offspring
-        offspring_fitness = await evaluate_population(mutated_offspring, candle)
-        
-        # Select next generation
-        population = selected + mutated_offspring
-        fitness_scores = fitness_scores + offspring_fitness
-        population, fitness_scores = select_next_generation(population, fitness_scores)
-        
-        # Update best rule
-        best_index = fitness_scores.index(max(fitness_scores))
-        best_rule = population[best_index]
-        await store_rule(best_rule)
-        
-        # Generate signal based on best rule
-        signal = apply_rule_to_candle(best_rule, candle)
-        return signal
-        
-    except Exception as e:
-        handle_error(e, "generate_ga_signals", logger=logger)
-        return None
+async def generate_ga_signals(data: Dict[str, Any]) -> GASignal:
+    if data.get("action") not in ["buy", "sell"]:
+        raise InvalidOrderError(f"Invalid action: {data.get('action')}")
+    return GASignal(
+        symbol=data.get("symbol"),
+        action=data.get("action"),
+        price=Decimal(str(data.get("price"))),
+        quantity=Decimal(str(data.get("quantity")))
+    )
 
 async def evaluate_population(population: List[TradingRule], candle: pd.Series) -> List[float]:
     """Evaluate the fitness of each rule in the population"""
@@ -418,7 +385,7 @@ async def run_ga_optimization(ctx: Any) -> None:
                 ctx.logger.info(f"Processing {len(rows)} candles...")
                 candles = [dict(row) for row in rows]
                 
-                signals = [generate_ga_signals(pd.Series(candle)) for candle in candles]
+                signals = [generate_ga_signals(candle) for candle in candles]
                 if signals:
                     ctx.logger.info(f"Generated {len(signals)} signals")
                 else:

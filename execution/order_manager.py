@@ -1,9 +1,10 @@
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 import asyncio
 from collections import defaultdict
 from utils.data_validator import DataValidator
 from utils.numeric_handler import NumericHandler
-from trading.exceptions import OrderError, InvalidOrderError
+from utils.exceptions import OrderError, InvalidOrderError
 
 class OrderManager:
     def __init__(self, ctx: Any):
@@ -52,4 +53,27 @@ class OrderManager:
                 return None
             except Exception as e:
                 self.logger.error(f"Unexpected error in place_order: {e}")
-                return None 
+                return None
+
+    async def cancel_order(self, order_id: str) -> bool:
+        async with self._lock:
+            try:
+                order = await self.ctx.exchange_interface.close_order(order_id)
+                if order and order.get('status') == 'CLOSED':
+                    self.open_orders.pop(order_id, None)
+                    self.logger.info(f"Order {order_id} canceled successfully.")
+                    return True
+                else:
+                    self.logger.warning(f"Failed to cancel order {order_id}.")
+                    return False
+            except Exception as e:
+                self.logger.error(f"Error cancelling order {order_id}: {e}")
+                return False
+
+    async def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            order = await self.ctx.exchange_interface.get_order_status(order_id)
+            return order
+        except Exception as e:
+            self.logger.error(f"Failed to get order status for {order_id}: {e}")
+            return None 

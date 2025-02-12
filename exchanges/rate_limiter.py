@@ -3,7 +3,7 @@ import time
 from typing import Dict
 import logging
 
-from trading.exceptions import RateLimitExceeded
+from utils.exceptions import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,16 @@ class RateLimit:
         self.calls += 1
 
 class RateLimiter:
-    def __init__(self, limits: Dict[str, RateLimit]):
-        self.limits = limits
+    def __init__(self, rate_limits: Dict[str, RateLimit]):
+        self.rate_limits = rate_limits
+        self.logger = logging.getLogger(__name__)
+
+    async def limit(self, key: str):
+        if key in self.rate_limits:
+            await self.rate_limits[key].acquire()
 
     async def acquire(self, key: str):
-        if key in self.limits:
-            await self.limits[key].acquire()
+        if key in self.rate_limits:
+            await self.rate_limits[key].acquire()
         else:
             raise ValueError(f"Rate limit key '{key}' not defined.") 

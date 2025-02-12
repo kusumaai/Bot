@@ -4,6 +4,8 @@ import time
 import random
 from typing import Dict, List
 
+from exchanges.rate_limiter import RateLimit
+
 class RateLimiter:
     def __init__(self, limits: Dict[str, RateLimit]):
         self.limits = limits

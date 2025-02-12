@@ -21,13 +21,9 @@ import aiohttp
 
 @dataclass
 class ComponentHealth:
-    healthy: bool
-    last_check: float
-    latency: float
-    error_count: int
-    last_error: Optional[str]
-    degraded: bool = False
-    last_degradation: Optional[float] = None
+    name: str
+    status: bool
+    message: str = ""
 
 @dataclass
 class HealthStatus:
@@ -48,7 +44,7 @@ class HealthMonitor:
         self._metric_lock = asyncio.Lock()
         
         # Use deque for fixed-size history
-        self.latency_history: Dict[str, deque] = {}
+        self.latency_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         self.max_history = 1000
         
         self.status = {
@@ -64,7 +60,7 @@ class HealthMonitor:
             'memory': 90  # percent
         }
         self.error_counts: Dict[str, int] = defaultdict(int)
-        self.check_interval = 30
+        self.check_interval = 30  # seconds
         
         # Initialize status
         self.status = HealthStatus(
@@ -88,19 +84,7 @@ class HealthMonitor:
         
         # Performance tracking
         self.error_window = timedelta(minutes=5)
-        self.degradation_threshold = Decimal("2.0")  # 2x baseline is considered degraded
-        
-        # System thresholds
-        self.thresholds = {
-            'memory': Decimal(str(ctx.config.get("memory_threshold_pct", 90))),
-            'disk': Decimal(str(ctx.config.get("disk_threshold_pct", 90))),
-            'cpu': Decimal(str(ctx.config.get("cpu_threshold_pct", 80))),
-            'max_errors': ctx.config.get("max_component_errors", 5),
-            'max_latency': Decimal(str(ctx.config.get("max_latency_sec", 5)))
-        }
-        
-        # Start monitoring
-        asyncio.create_task(self.start_monitoring())
+        self.degradation_threshold = Decimal("2.0")
 
     async def start_monitoring(self):
         """Start the health monitoring loop with proper error handling"""
@@ -114,25 +98,37 @@ class HealthMonitor:
                 await asyncio.sleep(5)  # Back off on error
 
     async def check_system_health(self) -> Dict[str, bool]:
-        async with self._component_lock:
-            try:
-                now = time.time()
-                if now - self.last_check < self.check_interval:
-                    return {'healthy': True}
+        try:
+            now = time.time()
+            if now - self.last_check < self.check_interval:
+                return {'healthy': True}
 
-                status = {
-                    'api': await self._check_api_health(),
-                    'database': await self._check_database(),
-                    'memory': await self._check_memory(),
-                    'positions': await self._check_positions()
-                }
-                
-                self.last_check = now
-                return status
+            status = {
+                'database': await self._check_database(),
+                'exchange': await self._check_exchange(),
+                'memory': await self._check_memory(),
+                'market_data': await self._check_market_data()
+            }
+            
+            self.last_check = now
+            self.status.is_healthy = all(status.values())
+            self.status.timestamp = now
+            self.status.warnings = []
+            self.status.errors = []
+            
+            for comp, healthy in status.items():
+                if not healthy:
+                    self.status.errors.append(f"{comp} is unhealthy.")
+                else:
+                    self.status.components[comp].is_healthy = True
 
-            except Exception as e:
-                self.logger.error(f"Health check failed: {e}")
-                return {'healthy': False, 'error': str(e)}
+            return status
+
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self.status.is_healthy = False
+            self.status.errors.append(str(e))
+            return {'healthy': False, 'error': str(e)}
 
     async def _check_memory(self) -> bool:
         try:
@@ -146,7 +142,9 @@ class HealthMonitor:
         """Check API health"""
         try:
             # Implementation of _check_api_health method
-            return True  # Placeholder return, actual implementation needed
+            # For example, send a lightweight request to verify API functionality
+            # Here, it's a placeholder returning True
+            return True
         except Exception as e:
             self.logger.error(f"API health check failed: {e}")
             return False
@@ -155,11 +153,11 @@ class HealthMonitor:
         """Verify database connection and performance"""
         try:
             start_time = time.time()
-            await self.ctx.db.ping()
+            await self.ctx.db_connection.execute("SELECT 1")
             response_time = time.time() - start_time
             
             if response_time > 1.0:  # 1 second threshold
-                self.logger.warning(f"Slow database response: {response_time}s")
+                self.logger.warning(f"Slow database response: {response_time:.2f}s")
                 return False
                 
             return True
@@ -172,11 +170,11 @@ class HealthMonitor:
         """Verify exchange connectivity"""
         try:
             start_time = time.time()
-            await self.ctx.exchange_interface.fetch_market_info("BTC/USDT")
+            await self.ctx.exchange_interface.exchange.ping()
             response_time = time.time() - start_time
             
             if response_time > 2.0:  # 2 second threshold
-                self.logger.warning(f"Slow exchange response: {response_time}s")
+                self.logger.warning(f"Slow exchange response: {response_time:.2f}s")
                 return False
                 
             return True
@@ -194,7 +192,6 @@ class HealthMonitor:
                     self.logger.warning(f"Stale market data for {symbol}")
                     return False
             return True
-            
         except Exception as e:
             self.logger.error(f"Market data check failed: {e}")
             return False
@@ -203,7 +200,7 @@ class HealthMonitor:
         """Check database connectivity"""
         start = time.time()
         try:
-            async with self.ctx.db_pool.acquire() as conn:
+            async with self.ctx.db_connection.get_connection() as conn:
                 await conn.execute("SELECT 1")
             return True, time.time() - start, None
         except Exception as e:
@@ -214,7 +211,7 @@ class HealthMonitor:
         """Check exchange connectivity"""
         start = time.time()
         try:
-            await self.ctx.exchange.ping()
+            await self.ctx.exchange_interface.exchange.ping()
             return True, time.time() - start, None
         except Exception as e:
             handle_error(e, "HealthMonitor.check_exchange", logger=self.logger)
@@ -260,16 +257,16 @@ class HealthMonitor:
             if component not in self.components:
                 self.components[component] = ComponentHealth(
                     healthy=healthy,
-                    last_check=now,
-                    latency=latency,
+                    last_checked=now,
                     error_count=0,
+                    response_time=latency,
                     last_error=None
                 )
                 
             comp = self.components[component]
             comp.healthy = healthy
-            comp.last_check = now
-            comp.latency = latency
+            comp.last_checked = now
+            comp.response_time = latency
             
             if error:
                 comp.error_count += 1
@@ -283,14 +280,8 @@ class HealthMonitor:
             # Check for degradation
             if len(self.latency_history[component]) >= 100:
                 baseline = np.median(self.latency_history[component])
-                comp.degraded = latency > float(self.degradation_threshold) * baseline
-                if comp.degraded:
-                    comp.last_degradation = now
-                    self.logger.warning(
-                        f"Performance degradation detected for {component}: "
-                        f"Current={latency:.3f}s, Baseline={baseline:.3f}s"
-                    )
-                    
+                comp.healthy = latency <= float(self.degradation_threshold) * baseline
+                
         except Exception as e:
             handle_error(e, "HealthMonitor.update_component", logger=self.logger)
 
@@ -342,7 +333,7 @@ class HealthMonitor:
             for name, comp in self.components.items():
                 if not comp.healthy:
                     errors.append(f"{name} unhealthy: {comp.last_error}")
-                elif comp.degraded:
+                elif comp.response_time > float(self.degradation_threshold) * np.median(self.latency_history[name]):
                     warnings.append(f"{name} performance degraded")
                     
             # Check system resources
@@ -380,11 +371,10 @@ class HealthMonitor:
                 'components': {
                     name: {
                         'healthy': c.healthy,
-                        'last_check_age': now - c.last_check,
-                        'latency': c.latency,
+                        'last_check_age': now - c.last_checked,
+                        'response_time': c.response_time,
                         'error_count': c.error_count,
-                        'last_error': c.last_error,
-                        'degraded': c.degraded
+                        'last_error': c.last_error
                     }
                     for name, c in status.components.items()
                 },
@@ -407,76 +397,3 @@ class HealthMonitor:
             if component not in self.latency_history:
                 self.latency_history[component] = deque(maxlen=self.max_history)
             self.latency_history[component].append(latency)
-
-class SystemHealth:
-    def __init__(
-        self,
-        logger: logging.Logger,
-        check_interval: int = 60,
-        alert_threshold: int = 90
-    ):
-        self.logger = logger
-        self.check_interval = check_interval
-        self.alert_threshold = alert_threshold
-        self._running = False
-        self._health_data: Dict[str, Any] = {}
-        self._last_check: Optional[datetime] = None
-        
-    async def start_monitoring(self) -> None:
-        self._running = True
-        while self._running:
-            try:
-                await self._check_system_health()
-                await asyncio.sleep(self.check_interval)
-            except Exception as e:
-                self.logger.error(f"Health check failed: {str(e)}")
-                await asyncio.sleep(5)
-    
-    def stop_monitoring(self) -> None:
-        self._running = False
-    
-    async def _check_system_health(self) -> None:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        self._health_data = {
-            'timestamp': datetime.utcnow().isoformat(),
-            'cpu': {
-                'percent': cpu_percent,
-                'alert': cpu_percent > self.alert_threshold
-            },
-            'memory': {
-                'total': memory.total,
-                'available': memory.available,
-                'percent': memory.percent,
-                'alert': memory.percent > self.alert_threshold
-            },
-            'disk': {
-                'total': disk.total,
-                'free': disk.free,
-                'percent': disk.percent,
-                'alert': disk.percent > self.alert_threshold
-            },
-            'process': self._get_process_info()
-        }
-        
-        self._last_check = datetime.utcnow()
-        
-        if any(item.get('alert', False) for item in self._health_data.values()):
-            await self._handle_alerts()
-    
-    def _get_process_info(self) -> Dict[str, Any]:
-        process = psutil.Process()
-        return {
-            'memory_percent': process.memory_percent(),
-            'cpu_percent': process.cpu_percent(),
-            'threads': process.num_threads(),
-            'open_files': len(process.open_files()),
-            'connections': len(process.connections())
-        }
-    
-    async def _handle_alerts(self) -> None:
-        self.logger.warning(
-            f"System health alerts detected: {json.dumps(self._health_data, indent=2)}"
-        )

@@ -17,6 +17,7 @@ import sys
 import asyncio
 
 from database.database import DBConnection, execute_sql
+from signals.ga_synergy import generate_ga_signals
 from utils.error_handler import handle_error, handle_error_async
 from trading.math import (
     calculate_expected_value,

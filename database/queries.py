@@ -1,12 +1,18 @@
+from decimal import InvalidOperation
 from typing import Dict, List, Any, Optional, Union, Tuple
 import logging
 from datetime import datetime
 import json
 import asyncio
 
-from .connection import DatabaseConnection
-from utils.error_handler import DatabaseError
+import aiosqlite
+
+from database.database import execute_sql
+
+from .connection import DBConnection, DatabaseConnection
+from utils.error_handler import DatabaseError, handle_error_async
 from utils.numeric_handler import NumericHandler
+from utils.exceptions import DatabaseError
 
 class QueryBuilder:
     """Helper class to build safe SQL queries"""
@@ -325,4 +331,13 @@ class DatabaseQueries:
             return []
         except Exception as e:
             self.logger.error(f"Unexpected error when retrieving positions: {e}")
-            return [] 
+            return []
+
+    async def insert_trade(self, trade: Dict[str, Any]) -> bool:
+        query, params = QueryBuilder().build_insert_trade(trade)
+        success = await execute_sql(query, params, self.db_path)
+        if not success:
+            raise DatabaseError("Failed to insert trade into database.")
+        return True
+
+    # Add other database query methods as needed 

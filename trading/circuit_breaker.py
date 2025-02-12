@@ -19,8 +19,9 @@ from utils.numeric import NumericHandler
 from risk.limits import RiskLimits
 from risk.position import Position
 from risk.manager import RiskManager
-from utils.error_handler import handle_error, CircuitBreakerError
+from utils.error_handler import handle_error, CircuitBreakerError, handle_error_async
 from database.queries import DatabaseQueries
+from trading.portfolio_manager import PortfolioManager
 
 class CircuitBreakerState(Enum):
     NORMAL = "NORMAL"
@@ -33,7 +34,7 @@ class CircuitBreakerState(Enum):
 class CircuitBreaker:
     def __init__(
         self,
-        db_queries: DatabaseQueries,
+        db_queries: Any,
         logger: logging.Logger,
         max_drawdown: Decimal = Decimal('-0.1'),
         max_daily_loss: Decimal = Decimal('-0.03'),
@@ -53,7 +54,7 @@ class CircuitBreaker:
         self.nh = NumericHandler()
         
         # State tracking
-        self.state = CircuitBreakerState.NORMAL
+        self.state = "NORMAL"
         self.last_state_change = time.time()
         self.error_counts: Dict[str, int] = {}
         self.triggered_reasons: List[str] = []
@@ -66,6 +67,78 @@ class CircuitBreaker:
         # Start monitoring
         asyncio.create_task(self.monitor_loop())
 
+    async def initialize(self):
+        """Initialize circuit breaker components"""
+        try:
+            self.portfolio_manager = PortfolioManager(self.risk_limits)
+            await self.portfolio_manager.initialize()
+            asyncio.create_task(self.monitor_loop())
+            self.logger.info("CircuitBreaker initialized and monitoring started.")
+        except Exception as e:
+            await handle_error_async(e, "CircuitBreaker.initialize", self.logger)
+            raise CircuitBreakerError(f"Failed to initialize CircuitBreaker: {e}") from e
+
+    async def monitor_loop(self):
+        """Continuously monitor portfolio and enforce circuit breakers"""
+        while True:
+            try:
+                await self.check_conditions()
+                await asyncio.sleep(60)  # Check every minute
+            except Exception as e:
+                await handle_error_async(e, "CircuitBreaker.monitor_loop", self.logger)
+                await asyncio.sleep(60)  # Wait before retrying
+
+    async def check_conditions(self):
+        """Check various risk conditions and enforce circuit breakers if necessary"""
+        if not self.portfolio_manager or not self.risk_limits:
+            self.logger.warning("PortfolioManager or RiskLimits not initialized.")
+            return
+
+        try:
+            await self.portfolio_manager.update_stats()
+            stats = self.portfolio_manager.stats
+
+            if not stats:
+                self.logger.warning("Portfolio stats not available.")
+                return
+
+            # Check for drawdown
+            if stats.drawdown >= self.risk_limits.max_drawdown:
+                await self.trigger_emergency_stop("Drawdown limit exceeded.")
+
+            # Check for daily loss
+            if stats.daily_pnl <= -self.risk_limits.max_daily_loss:
+                await self.trigger_emergency_stop("Daily loss limit exceeded.")
+
+            # Check for maximum number of positions
+            if stats.position_count > self.risk_limits.max_positions:
+                await self.trigger_emergency_stop("Maximum number of positions exceeded.")
+
+        except Exception as e:
+            await handle_error_async(e, "CircuitBreaker.check_conditions", self.logger)
+
+    async def trigger_emergency_stop(self, reason: str):
+        """Trigger an emergency stop due to risk condition violation"""
+        self.logger.critical(f"Emergency Stop Triggered: {reason}")
+        self.ctx.running = False  # Assuming ctx has a 'running' attribute to stop the bot
+        # Additional actions like closing all positions can be implemented here
+
+    async def _check_drawdown(self) -> bool:
+        """Check if the portfolio drawdown exceeds the maximum allowed"""
+        try:
+            await self.portfolio_manager.update_stats()
+            stats = self.portfolio_manager.stats
+            if not stats:
+                self.logger.warning("Portfolio stats not available for drawdown check.")
+                return False
+            if stats.drawdown >= self.risk_limits.max_drawdown:
+                self.logger.warning(f"Drawdown exceeded: {stats.drawdown} >= {self.risk_limits.max_drawdown}")
+                return True
+            return False
+        except Exception as e:
+            await handle_error_async(e, "_check_drawdown", self.logger)
+            return False
+
     async def check_circuit(self, symbol: str) -> bool:
         """Check if trading should be allowed"""
         try:
@@ -77,11 +150,25 @@ class CircuitBreaker:
             
             await self._check_conditions(symbol)
             return True
-            
+                
         except CircuitBreakerError as e:
             self.logger.warning(f"Circuit breaker check failed: {str(e)}")
             raise
-    
+
+    async def _should_reset_circuit(self) -> bool:
+        if self._last_reset and (datetime.utcnow() - self._last_reset) > timedelta(minutes=self.cooldown_minutes):
+            return True
+        return False
+
+    async def _reset_circuit(self):
+        self._circuit_open = False
+        self._last_reset = datetime.utcnow()
+        self.logger.info("Circuit breaker has been reset.")
+
+    async def _check_conditions(self, symbol: str):
+        # Implement condition checks for drawdown, daily loss, trade counts
+        pass
+
     async def record_trade(self, symbol: str) -> None:
         """Record trade for rate limiting"""
         now = datetime.utcnow()
@@ -92,35 +179,6 @@ class CircuitBreaker:
         # Clean old records
         hour_ago = now - timedelta(hours=1)
         self._trade_counts[symbol] = [t for t in self._trade_counts[symbol] if t > hour_ago]
-    
-    async def _check_conditions(self, symbol: str) -> None:
-        """Check all circuit breaker conditions"""
-        await asyncio.gather(
-            self._check_drawdown(),
-            self._check_daily_loss(),
-            self._check_trade_frequency(symbol)
-        )
-    
-    async def _check_drawdown(self) -> None:
-        """Check current drawdown"""
-        query = """
-            SELECT (
-                MAX(close) - (
-                    SELECT close FROM candles 
-                    WHERE symbol = ? 
-                    ORDER BY timestamp DESC LIMIT 1
-                )
-            ) / MAX(close) as drawdown
-            FROM candles WHERE symbol = ? AND timestamp >= ?
-        """
-        
-        day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        result = await self.db.execute(query, [symbol, symbol, day_start.timestamp()], fetch=True)
-        
-        if result and result[0]['drawdown'] < self.max_drawdown:
-            self._circuit_open = True
-            raise CircuitBreakerError(f"Maximum drawdown exceeded: {result[0]['drawdown']}")
     
     async def _check_daily_loss(self) -> None:
         """Check daily loss limit"""
@@ -143,54 +201,6 @@ class CircuitBreaker:
             if trades_last_hour >= self.max_trades_per_hour:
                 raise CircuitBreakerError(f"Maximum trades per hour exceeded: {trades_last_hour}")
     
-    async def _should_reset_circuit(self) -> bool:
-        """Check if circuit breaker should reset"""
-        if not self._last_reset:
-            return False
-            
-        cooldown_passed = (datetime.utcnow() - self._last_reset > timedelta(minutes=self.cooldown_minutes))
-        if not cooldown_passed:
-            return False
-            
-        try:
-            await self._check_conditions(symbol)
-            return True
-        except CircuitBreakerError:
-            return False
-    
-    async def _reset_circuit(self) -> None:
-        """Reset circuit breaker"""
-        self._circuit_open = False
-        self._last_reset = datetime.utcnow()
-        self.logger.info("Circuit breaker reset")
-
-    async def monitor_loop(self) -> None:
-        """Main monitoring loop"""
-        while True:
-            try:
-                if self.state == CircuitBreakerState.NORMAL:
-                    trading_violation = await self.check_trading_limits()
-                    if trading_violation:
-                        await self.trigger(trading_violation)
-                        continue
-                        
-                    technical_violation = await self.check_technical_limits()
-                    if technical_violation:
-                        await self.trigger(technical_violation)
-                        continue
-                
-                elif self.state == CircuitBreakerState.TRIGGERED:
-                    if await self.test_recovery():
-                        self.state = CircuitBreakerState.NORMAL
-                        self.last_state_change = time.time()
-                        self.logger.info("Circuit breaker closed - resuming normal operation")
-                
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                handle_error(e, "CircuitBreaker.monitor_loop", logger=self.logger)
-                await asyncio.sleep(5)
-
     async def trigger(self, reason: str) -> None:
         """Trigger circuit breaker"""
         if self.state != CircuitBreakerState.TRIGGERED:

@@ -6,7 +6,7 @@ Manages exchange connections and operations with proper error handling
 
 import logging
 import asyncio
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from decimal import Decimal
 import ccxt.async_support as ccxt
 from datetime import datetime, timedelta
@@ -22,66 +22,44 @@ from exchanges.rate_limiter import RateLimiter, RateLimit
 from exchanges.paper_exchange import PaperExchange
 from exchanges.actual_exchange import ActualExchange
 
+
 @dataclass
-class RateLimit:
+class RateLimitConfig:
     """Rate limit configuration"""
     max_requests: int
     time_window: int  # seconds
     weight: int = 1
 
+
 class RateLimiter:
-    """Manages API rate limiting"""
-    
-    def __init__(self, limits: Dict[str, RateLimit]):
+    """Simple rate limiter using asyncio Semaphore and timestamps"""
+
+    def __init__(self, limits: Dict[str, RateLimitConfig]):
         self.limits = limits
-        self.request_timestamps: Dict[str, List[float]] = {
-            endpoint: [] for endpoint in limits.keys()
-        }
-    
-    async def acquire(self, endpoint: str) -> None:
-        """
-        Acquire permission to make a request
-        
-        Args:
-            endpoint: API endpoint identifier
-        """
-        try:
-            if endpoint not in self.limits:
-                return
-            
-            limit = self.limits[endpoint]
-            now = time.time()
-            window_start = now - limit.time_window
-            
-            # Clean old timestamps
-            self.request_timestamps[endpoint] = [
-                ts for ts in self.request_timestamps[endpoint]
-                if ts > window_start
-            ]
-            
-            # Check if we're at the limit
-            while len(self.request_timestamps[endpoint]) >= limit.max_requests:
-                sleep_time = (
-                    self.request_timestamps[endpoint][0] +
-                    limit.time_window - now
-                )
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                now = time.time()
-                window_start = now - limit.time_window
-                self.request_timestamps[endpoint] = [
-                    ts for ts in self.request_timestamps[endpoint]
-                    if ts > window_start
-                ]
-            
-            self.request_timestamps[endpoint].append(now)
-        except Exception as e:
-            logging.error(f"Rate limiter error: {e}")
-            await asyncio.sleep(1)  # Fallback delay
+        self.semaphores = {key: asyncio.Semaphore(limit.max_requests) for key, limit in limits.items()}
+        self.reset_times = {key: time.time() + limit.time_window for key, limit in limits.items()}
+        self.lock = asyncio.Lock()
+
+    async def acquire(self, category: str):
+        if category not in self.limits:
+            raise ValueError(f"Rate limit category '{category}' not defined.")
+
+        async with self.lock:
+            current_time = time.time()
+            if current_time >= self.reset_times[category]:
+                self.semaphores[category] = asyncio.Semaphore(self.limits[category].max_requests)
+                self.reset_times[category] = current_time + self.limits[category].time_window
+
+        await self.semaphores[category].acquire()
+
+    async def release(self, category: str):
+        if category in self.semaphores:
+            self.semaphores[category].release()
+
 
 class ExchangeManager:
     """Manages exchange interactions with proper rate limiting and error handling"""
-    
+
     def __init__(
         self,
         exchange_id: str,
@@ -97,10 +75,10 @@ class ExchangeManager:
         
         # Initialize rate limiter with proper error handling
         self.rate_limiter = RateLimiter({
-            'market': RateLimit(20, 60),
-            'trade': RateLimit(10, 60),
-            'order': RateLimit(50, 60),
-            'position': RateLimit(10, 60)
+            'market': RateLimitConfig(20, 60),
+            'trade': RateLimitConfig(10, 60),
+            'order': RateLimitConfig(50, 60),
+            'position': RateLimitConfig(10, 60)
         })
         
         self.is_paper = sandbox
@@ -111,16 +89,14 @@ class ExchangeManager:
                 self.exchange = PaperExchange(api_key, api_secret)
             else:
                 self.exchange = ActualExchange(exchange_id, api_key, api_secret)
-            
-            if not self.is_paper:
                 self.db_queries = DatabaseQueries(logger=self.logger)
                 
         except (ExchangeError, ValueError) as e:
             self.logger.error(f"Failed to initialize exchange: {str(e)}")
-            raise ExchangeError(f"Exchange initialization failed: {str(e)}")
+            raise ExchangeError(f"Exchange initialization failed: {str(e)}") from e
         except Exception as e:
             self.logger.error(f"Unexpected error during exchange initialization: {e}")
-            raise ExchangeError(f"Exchange initialization failed: {str(e)}")
+            raise ExchangeError(f"Exchange initialization failed: {str(e)}") from e
         
         self._markets: Optional[Dict[str, Any]] = None
         self._last_market_update: Optional[datetime] = None
@@ -129,7 +105,7 @@ class ExchangeManager:
         if self.is_paper:
             self.paper_balances = {'USDT': Decimal('10000.0')}  # Default paper balance
             self.paper_positions = {}
-    
+
     async def close(self):
         """Close exchange connections and clean up resources"""
         async with self._lock:
@@ -137,15 +113,15 @@ class ExchangeManager:
                 await self.exchange.close()
             if self.db_queries:
                 await self.db_queries.close()
-    
+
     async def __aenter__(self):
         """Async context manager entry"""
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         await self.close()
-    
+
     async def get_markets(self, force_update: bool = False) -> Dict[str, Any]:
         """
         Get market information with caching
@@ -168,7 +144,7 @@ class ExchangeManager:
                 raise ExchangeError(f"Failed to load markets: {str(e)}")
         
         return self._markets
-    
+
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker data"""
         try:
@@ -182,7 +158,7 @@ class ExchangeManager:
             return ticker
         except Exception as e:
             raise ExchangeError(f"Failed to fetch ticker for {symbol}: {str(e)}")
-    
+
     async def create_order(self, symbol: str, side: str, amount: Decimal, price: Optional[Decimal] = None) -> Optional[Dict[str, Any]]:
         try:
             await self.rate_limiter.acquire('trade')
@@ -220,7 +196,7 @@ class ExchangeManager:
         except Exception as e:
             self.logger.error(f"Unexpected error in close_order: {e}")
             return None
-    
+
     async def fetch_balance(self) -> Dict[str, Any]:
         """Fetch account balance"""
         try:
@@ -228,7 +204,7 @@ class ExchangeManager:
             return await self.exchange.fetch_balance()
         except Exception as e:
             raise ExchangeError(f"Failed to fetch balance: {str(e)}")
-    
+
     async def fetch_open_orders(
         self,
         symbol: Optional[str] = None
@@ -258,8 +234,8 @@ class ExchangeManager:
 
     async def _initialize_exchange(self, **kwargs) -> None:
         """Safely initialize exchange with validation"""
-        self.is_paper = kwargs['exchange_id'] == 'paper'
-        exchange_id = 'binance' if self.is_paper else kwargs['exchange_id']
+        self.is_paper = kwargs.get('exchange_id', '').lower() == 'paper'
+        exchange_id = 'binance' if self.is_paper else kwargs.get('exchange_id', 'binance')
         
         if not hasattr(ccxt, exchange_id):
             raise ValueError(f"Exchange {exchange_id} not supported")
@@ -297,11 +273,3 @@ class ExchangeManager:
         except Exception as e:
             self.logger.error(f"Unexpected error in get_order_status: {e}")
             return None
-
-    async def close(self):
-        """Close exchange connections and clean up resources"""
-        async with self._lock:
-            if self.exchange:
-                await self.exchange.close()
-            if self.db_queries:
-                await self.db_queries.close()

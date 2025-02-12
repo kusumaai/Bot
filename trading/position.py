@@ -4,7 +4,7 @@ from typing import Optional
 import asyncio
 import logging
 
-from trading.exceptions import PositionUpdateError
+from utils.exceptions import PositionUpdateError
 
 @dataclass
 class Position:
@@ -15,6 +15,7 @@ class Position:
     timestamp: int
     current_price: Decimal = Decimal('0')
     unrealized_pnl: Decimal = Decimal('0')
+    realized_pnl: Decimal = Decimal('0')
     closed: bool = False
 
     def __post_init__(self):
@@ -37,4 +38,11 @@ class Position:
                 raise PositionUpdateError(f"Invalid operation: {e}")
             except Exception as e:
                 logging.getLogger(__name__).error(f"Unexpected error during position update: {e}")
-                raise PositionUpdateError(f"Unexpected error: {e}") 
+                raise PositionUpdateError(f"Unexpected error: {e}")
+
+    def update_market_data(self, current_price: Decimal):
+        self.current_price = current_price
+        self.unrealized_pnl = (self.current_price - self.entry_price) * self.size if self.side.lower() == 'buy' else (self.entry_price - self.current_price) * self.size
+
+    def close_position(self, realized_pnl: Decimal):
+        self.realized_pnl += realized_pnl 
