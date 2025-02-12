@@ -141,7 +141,7 @@ class SystemInitializer:
                 self.logger.info("Running in paper trading mode")
                 return True
                 
-            self.ctx.exchange = await self.ctx.exchange_class(self.ctx)
+            self.ctx.exchange = self.ctx.exchange_interface.exchange
             if not self.ctx.exchange:
                 self.logger.error("Failed to initialize exchange connection")
                 return False

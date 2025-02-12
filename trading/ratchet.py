@@ -35,18 +35,19 @@ class RatchetState:
 class RatchetManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.nh = NumericHandler()
-        self.active_trades: Dict[str, Dict] = {}
+        self.logger = ctx.logger
         self._lock = asyncio.Lock()
+        self.nh = NumericHandler()
+        self.ratchets: Dict[str, Dict[str, Any]] = {}
         
         # Load thresholds from config
         self.thresholds = [
-            self.nh.percentage_to_decimal(t) 
-            for t in ctx.config.get('ratchet_thresholds', [2, 4, 6])
+            self.nh.to_decimal(str(t))
+            for t in ctx.config.get('ratchet_thresholds', [])
         ]
         self.lock_ins = [
-            self.nh.percentage_to_decimal(l) 
-            for l in ctx.config.get('ratchet_lock_ins', [1, 2, 3])
+            self.nh.to_decimal(str(l))
+            for l in ctx.config.get('ratchet_lock_ins', [])
         ]
         self.emergency_stop_pct = Decimal(str(ctx.config.get("emergency_stop_pct", -2)))
         self.trailing_pct = Decimal(str(ctx.config.get("trailing_stop_pct", 1.5)))
@@ -66,13 +67,10 @@ class RatchetManager:
         """Initialize a new trade with proper ID structure"""
         async with self._lock:
             normalized_id = self._normalize_trade_id(trade_id, symbol)
-            self.active_trades[normalized_id] = {
+            self.ratchets[normalized_id] = {
                 'entry_price': self.nh.to_decimal(entry_price),
-                'current_stop': self.nh.to_decimal(entry_price),
-                'highest_price': self.nh.to_decimal(entry_price),
-                'threshold_index': 0,
-                'symbol': symbol,
-                'initialized_at': datetime.utcnow()
+                'current_level': 0,
+                'stop_loss': None
             }
     
     def _normalize_trade_id(self, trade_id: str, symbol: str) -> str:
@@ -80,86 +78,96 @@ class RatchetManager:
         timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
         return f"{symbol}_{timestamp}_{trade_id[-8:]}"
     
-    async def update_price(self, trade_id: str, current_price: Decimal) -> Optional[Decimal]:
-        """Update price and return new stop loss if applicable"""
+    async def update_position_ratchet(
+        self,
+        symbol: str,
+        current_price: Decimal,
+        position: Dict[str, Any]
+    ) -> Optional[Decimal]:
         async with self._lock:
-            trade = self.active_trades.get(trade_id)
-            if not trade:
+            try:
+                if symbol not in self.ratchets:
+                    self.ratchets[symbol] = {
+                        'entry_price': self.nh.to_decimal(str(position['entry_price'])),
+                        'current_level': 0,
+                        'stop_loss': None
+                    }
+
+                ratchet = self.ratchets[symbol]
+                profit_pct = self.nh.safe_divide(
+                    current_price - ratchet['entry_price'],
+                    ratchet['entry_price']
+                )
+
+                return await self._check_ratchet_levels(symbol, profit_pct)
+
+            except Exception as e:
+                self.logger.error(f"Ratchet update failed: {e}")
                 return None
-                
-            current_price = self.nh.to_decimal(current_price)
-            trade['highest_price'] = max(trade['highest_price'], current_price)
-            
-            return await self._calculate_new_stop(trade, current_price)
     
-    async def _calculate_new_stop(self, trade: Dict, current_price: Decimal) -> Optional[Decimal]:
-        """Calculate new stop loss based on ratchet thresholds"""
-        entry_price = trade['entry_price']
-        highest_price = trade['highest_price']
-        current_threshold_idx = trade['threshold_index']
-        
-        # Calculate price movement as percentage
-        price_movement = (highest_price - entry_price) / entry_price
+    async def _check_ratchet_levels(self, symbol: str, profit_pct: Decimal) -> Optional[Decimal]:
+        """Check ratchet levels and return new stop loss if applicable"""
+        ratchet = self.ratchets[symbol]
+        current_level = ratchet['current_level']
         
         # Check if we've hit next threshold
-        while (current_threshold_idx < len(self.thresholds) and 
-               price_movement >= self.thresholds[current_threshold_idx]):
+        while (current_level < len(self.thresholds) and 
+               profit_pct >= self.thresholds[current_level]):
             # Move stop loss to lock in profits
-            new_stop = entry_price * (Decimal('1') + self.lock_ins[current_threshold_idx])
-            if new_stop > trade['current_stop']:
-                trade['current_stop'] = new_stop
-                trade['threshold_index'] = current_threshold_idx + 1
-                await self._log_stop_update(trade, new_stop)
-            current_threshold_idx += 1
+            new_stop = ratchet['entry_price'] * (Decimal('1') + self.lock_ins[current_level])
+            if new_stop > ratchet['stop_loss']:
+                ratchet['stop_loss'] = new_stop
+                ratchet['current_level'] = current_level + 1
+                await self._log_stop_update(ratchet, new_stop)
+            current_level += 1
             
-        return trade['current_stop']
+        return ratchet['stop_loss']
     
-    async def _log_stop_update(self, trade: Dict, new_stop: Decimal) -> None:
+    async def _log_stop_update(self, ratchet: Dict, new_stop: Decimal) -> None:
         """Log stop loss updates"""
-        self.ctx.logger.info(
-            f"Updated stop for {trade['symbol']}: "
-            f"Entry: {trade['entry_price']}, "
-            f"Highest: {trade['highest_price']}, "
+        self.logger.info(
+            f"Updated stop for {symbol}: "
+            f"Entry: {ratchet['entry_price']}, "
             f"New Stop: {new_stop}"
         )
 
     def get_trade_metrics(self, trade_id: str) -> Dict[str, Any]:
         """Get current metrics for trade"""
-        if trade_id not in self.active_trades:
+        if trade_id not in self.ratchets:
             return {}
             
         try:
-            trade = self.active_trades[trade_id]
-            hold_time = (time.time() - trade['initialized_at'].timestamp()) / 3600
+            ratchet = self.ratchets[trade_id]
+            hold_time = (time.time() - ratchet['entry_time']) / 3600
             
             return {
-                "entry_price": float(trade['entry_price']),
-                "current_stop": float(trade['current_stop']),
-                "highest_price": float(trade['highest_price']),
-                "lowest_price": float(trade['current_stop']),
-                "current_level": trade['threshold_index'],
-                "unrealized_pnl": float(trade['entry_price'] - trade['current_stop']) * float(trade['position_size']),
-                "max_adverse_excursion": float((trade['highest_price'] - trade['entry_price']) / trade['entry_price']),
-                "max_excursion": float((trade['highest_price'] - trade['entry_price']) / trade['entry_price']),
-                "current_drawdown": float((trade['highest_price'] - trade['current_stop']) / trade['highest_price']),
+                "entry_price": float(ratchet['entry_price']),
+                "current_stop": float(ratchet['stop_loss']),
+                "highest_price": float(ratchet['highest_price']),
+                "lowest_price": float(ratchet['lowest_price']),
+                "current_level": ratchet['current_level'],
+                "unrealized_pnl": float(ratchet['entry_price'] - ratchet['stop_loss']) * float(ratchet['position_size']),
+                "max_adverse_excursion": float((ratchet['highest_price'] - ratchet['entry_price']) / ratchet['entry_price']),
+                "max_excursion": float((ratchet['highest_price'] - ratchet['entry_price']) / ratchet['entry_price']),
+                "current_drawdown": float((ratchet['highest_price'] - ratchet['stop_loss']) / ratchet['highest_price']),
                 "hold_time_hours": round(hold_time, 1)
             }
         except Exception as e:
-            handle_error(e, "RatchetManager.get_trade_metrics", logger=self.ctx.logger)
+            handle_error(e, "RatchetManager.get_trade_metrics", logger=self.logger)
             return {}
 
     def remove_trade(self, trade_id: str) -> None:
         """Clean up trade tracking"""
         try:
-            if trade_id in self.active_trades:
+            if trade_id in self.ratchets:
                 metrics = self.get_trade_metrics(trade_id)
-                self.ctx.logger.info(
+                self.logger.info(
                     f"Removing trade {trade_id} tracking. "
                     f"Final metrics: {metrics}"
                 )
-                del self.active_trades[trade_id]
+                del self.ratchets[trade_id]
         except Exception as e:
-            handle_error(e, "RatchetManager.remove_trade", logger=self.ctx.logger)
+            handle_error(e, "RatchetManager.remove_trade", logger=self.logger)
 
     async def monitor_trades(self, exchange_interface: Any) -> None:
         """
@@ -168,16 +176,16 @@ class RatchetManager:
         """
         while True:
             try:
-                for trade_id, trade in list(self.active_trades.items()):
+                for trade_id, ratchet in list(self.ratchets.items()):
                     # Get current price
-                    symbol = trade['symbol']
+                    symbol = trade_id.split('_')[0]
                     price = Decimal(str(await exchange_interface.fetch_ticker(symbol)))
                     
                     if price <= Decimal("0"):
                         continue
                         
                     # Force check stops
-                    result = await self.update_price(trade_id, price)
+                    result = await self.update_position_ratchet(symbol, price, ratchet)
                     
                     if result:
                         stop_price = result
@@ -185,17 +193,17 @@ class RatchetManager:
                         # Execute stop
                         success = await exchange_interface.close_position(
                             symbol,
-                            trade['position_size']
+                            ratchet['position_size']
                         )
                         
                         if success:
-                            self.ctx.logger.info(
+                            self.logger.info(
                                 f"Stop executed for {trade_id}: "
                                 f"Price: {float(stop_price):.2f}"
                             )
                             self.remove_trade(trade_id)
                         else:
-                            self.ctx.logger.error(
+                            self.logger.error(
                                 f"Failed to execute stop for {trade_id}. "
                                 f"Will retry next cycle."
                             )
@@ -203,12 +211,12 @@ class RatchetManager:
                 await asyncio.sleep(1)  # Check every second
                 
             except Exception as e:
-                handle_error(e, "RatchetManager.monitor_trades", logger=self.ctx.logger)
+                handle_error(e, "RatchetManager.monitor_trades", logger=self.logger)
                 await asyncio.sleep(5)  # Back off on error
 
     def get_status_report(self) -> Dict[str, Any]:
         """Get status report for all tracked trades"""
         return {
             trade_id: self.get_trade_metrics(trade_id)
-            for trade_id in self.active_trades
+            for trade_id in self.ratchets
         }

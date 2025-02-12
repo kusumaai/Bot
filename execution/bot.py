@@ -3,13 +3,15 @@
 Module: execution/bot.py
 Main trading bot orchestrator with paper/live trading support and proper risk management.
 """
-
+import os
+import json
 import asyncio
 import time
 import logging
 from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+from config import load_config
 
 from risk.manager import RiskManager
 from risk.portfolio import PortfolioManager
@@ -24,17 +26,19 @@ from trading.math import (
 )
 from execution.exchange_interface import ExchangeInterface
 from utils.health_monitor import HealthMonitor
+from utils.logger import setup_logging
 from trading.circuit_breaker import CircuitBreaker, CircuitBreakerState
 from trading.ratchet import RatchetManager
 from database.database import DBConnection
 from utils.error_handler import handle_error
 
+
 class TradingContext:
     """Trading context maintaining all component instances and state"""
     def __init__(self):
         self.config = None
-        self.logger = None
-        self.running = False
+        self.logger = setup_logging(name="TradingBot", level="INFO")
+        self.running = True
         self.exchange_interface = None
         self.market_data = None
         self.portfolio_manager = None
@@ -221,7 +225,7 @@ async def main_loop(ctx: TradingContext) -> None:
     """Main trading loop"""
     ctx.logger.info(
         f"🚀 Starting trading bot\n"
-        f"Mode: {'PAPER' if ctx.config['paper_mode'] else 'LIVE'}\n"
+        f"Mode: {'PAPER' if ctx.config['paper_mode'] else 'LIVE'}\n" 
         f"Exchanges: {', '.join(ctx.config['exchanges'])}\n"
         f"Trading Fees: {ctx.config['trading_fees']*100:.2f}%\n"
         f"Slippage: {ctx.config['slippage']*100:.2f}%\n"
@@ -281,12 +285,33 @@ def main():
     ctx = TradingContext()
     
     try:
+        # Initialize required components in correct order
+        ctx.config = load_config()
+        
+        # Initialize exchange interface and wait for connection
+        ctx.exchange_interface = ExchangeInterface(ctx)
+        if not asyncio.run(ctx.exchange_interface.initialize()):
+            raise RuntimeError("Failed to initialize exchange connection")
+        
+        # Initialize remaining components in dependency order
+        ctx.market_data = MarketData(ctx)
+        ctx.portfolio_manager = PortfolioManager(ctx)
+        ctx.risk_manager = RiskManager(ctx)
+        ctx.circuit_breaker = CircuitBreaker(ctx)
+        ctx.health_monitor = HealthMonitor(ctx)
+        ctx.ratchet_manager = RatchetManager(ctx)
+        
+        # Start main loop
         asyncio.run(main_loop(ctx))
+        
     except KeyboardInterrupt:
         ctx.logger.info("👋 Shutting down gracefully...")
         ctx.running = False
+    except Exception as e:
+        handle_error(e, "main", logger=ctx.logger)
     finally:
-        asyncio.run(ctx.exchange_interface.close())
+        if ctx.exchange_interface:
+            asyncio.run(ctx.exchange_interface.close())
         ctx.logger.info("✨ Bot shutdown complete")
 
 if __name__ == "__main__":

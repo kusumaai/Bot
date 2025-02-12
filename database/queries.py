@@ -2,6 +2,7 @@ from typing import Dict, List, Any, Optional, Union
 import logging
 from datetime import datetime
 import json
+import asyncio
 
 from .connection import DatabaseConnection
 from utils.error_handler import DatabaseError
@@ -53,11 +54,23 @@ class QueryBuilder:
 class DatabaseQueries:
     """Safe database query implementations"""
     
-    def __init__(self, connection: DatabaseConnection, logger: logging.Logger):
-        self.connection = connection
+    def __init__(self, ctx: Any, logger: logging.Logger):
+        self.ctx = ctx
         self.logger = logger
+        self._lock = asyncio.Lock()
+        self.db_pool = None
         self.query_builder = QueryBuilder()
     
+    async def execute(self, query: str, params: tuple = ()) -> List[Any]:
+        """Execute SQL with injection protection"""
+        async with self._lock:
+            try:
+                async with DatabaseConnection(self.db_pool) as conn:
+                    return await conn.execute_sql(query, params)
+            except Exception as e:
+                self.logger.error(f"Database error: {e}")
+                raise DatabaseError(f"Query failed: {str(e)}")
+
     async def insert_candle_data(
         self,
         symbol: str,
@@ -91,7 +104,7 @@ class DatabaseQueries:
                     candle['close'],
                     candle['volume']
                 ]
-                await self.connection.execute(query, params)
+                await self.execute(query, params)
                 
         except Exception as e:
             raise DatabaseError(
@@ -121,7 +134,7 @@ class DatabaseQueries:
         )
         
         try:
-            results = await self.connection.execute(query, params, fetch=True)
+            results = await self.execute(query, params)
             return results or []
         except Exception as e:
             raise DatabaseError(
@@ -159,7 +172,7 @@ class DatabaseQueries:
                 datetime.utcnow().timestamp(),
                 json.dumps(metadata)
             ]
-            await self.connection.execute(query, params)
+            await self.execute(query, params)
             
         except Exception as e:
             raise DatabaseError(
@@ -190,7 +203,7 @@ class DatabaseQueries:
         )
         
         try:
-            results = await self.connection.execute(query, params, fetch=True)
+            results = await self.execute(query, params)
             return results or []
         except Exception as e:
             raise DatabaseError(
@@ -230,9 +243,28 @@ class DatabaseQueries:
                 datetime.utcnow().timestamp(),
                 position_id
             ]
-            await self.connection.execute(query, params)
+            await self.execute(query, params)
             
         except Exception as e:
             raise DatabaseError(
                 f"Failed to update position {position_id}: {str(e)}"
-            ) 
+            )
+
+    async def store_trade(self, trade: Dict[str, Any]) -> None:
+        query = """
+            INSERT INTO trades (
+                symbol, side, amount, price, timestamp
+            ) VALUES (?, ?, ?, ?, ?)
+        """
+        params = (
+            trade['symbol'],
+            trade['side'], 
+            str(trade['amount']),
+            str(trade['price']),
+            trade['timestamp']
+        )
+        await self.execute(query, params)
+
+    async def get_trades(self, symbol: str) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM trades WHERE symbol = ?"
+        return await self.execute(query, (symbol,)) 

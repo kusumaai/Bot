@@ -40,50 +40,65 @@ class ExchangeInterface:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.logger = ctx.logger
-        self.exchange: Optional[ccxt.Exchange] = None
-        self.last_request_time = 0
-        self.request_count = 0
-        self.rate_limit = ctx.config.get("rate_limit_per_second", 5)
-        self.paper_mode = ctx.config.get("paper_mode", True)
-        self.paper_balance = Decimal(str(ctx.config.get("initial_balance", "10000")))
-        self.paper_positions = {}
-        self.nh = NumericHandler()
         self._lock = asyncio.Lock()
-        self.order_cache: Dict[str, Dict] = {}
-        self.market_info: Dict[str, Dict] = {}
-        self.last_prices: Dict[str, Decimal] = {}
-        self.exchange_manager = ExchangeManager(ctx)
-        self.risk = RiskManager(ctx)
-        self.db = DatabaseQueries(ctx)
-        self.validator = MarketDataValidation(self.risk.limits, self.logger)
+        self._position_lock = asyncio.Lock()
+        self.nh = NumericHandler()
         
-        # Cache for market data
+        # Initialize caches with TTL
+        self.CACHE_TTL = 300  # 5 minutes
         self._ticker_cache: Dict[str, Dict[str, Any]] = {}
-        self._last_ticker_update: Dict[str, datetime] = {}
+        self._last_update: Dict[str, float] = {}
+        
+        # Safe config loading with defaults
+        self.paper_mode = self.ctx.config.get("paper_mode", True)
+        self.rate_limit = int(self.ctx.config.get("rate_limit_per_second", 5))
+        self.paper_balance = Decimal(str(self.ctx.config.get("initial_balance", "10000")))
+        
+        # Initialize exchange
+        self.exchange_manager = self._init_exchange_manager()
+        self.exchange = None
+        
+        # Initialize dependent components after exchange setup
+        self.risk = RiskManager(ctx)
+        self.validator = MarketDataValidation(self.risk.limits, self.logger)
+        self.db = DatabaseQueries(ctx, logger=self.logger)
 
-    async def initialize(self) -> bool:
-        """Initialize exchange connection with credentials"""
+    def _init_exchange_manager(self) -> 'ExchangeManager':
+        """Safely initialize exchange manager with validation"""
         try:
-            exchange_id = self.ctx.config.get("exchange", "kucoin")
-            credentials = {
-                "apiKey": self.ctx.config.get(f"{exchange_id}_api_key", ""),
-                "secret": self.ctx.config.get(f"{exchange_id}_secret", ""),
-                "password": self.ctx.config.get(f"{exchange_id}_password", ""),
-                "enableRateLimit": True
-            }
-
-            if not credentials["apiKey"] or not credentials["secret"]:
-                self.logger.error(f"Missing API credentials for {exchange_id}")
-                return False
-
-            exchange_class = getattr(ccxt, exchange_id)
-            self.exchange = exchange_class(credentials)
-            await self.exchange.load_markets()
-            self.logger.info(f"Exchange {exchange_id} initialized successfully")
-            return True
-
+            exchange_id = self.ctx.config.get('exchange', 'paper')
+            api_key = self.ctx.config.get('exchange_settings', {}).get('api_key')
+            api_secret = self.ctx.config.get('exchange_settings', {}).get('api_secret')
+            
+            if api_key and not self._validate_api_credentials(api_key, api_secret):
+                raise ValueError("Invalid API credentials")
+                
+            return ExchangeManager(
+                exchange_id=exchange_id,
+                api_key=api_key,
+                api_secret=api_secret,
+                logger=self.logger
+            )
         except Exception as e:
-            handle_error(e, "ExchangeInterface.initialize", logger=self.logger)
+            raise ExchangeError(f"Failed to initialize exchange manager: {str(e)}")
+            
+    async def _cleanup_cache(self) -> None:
+        """Clean expired cache entries"""
+        async with self._lock:
+            now = time.time()
+            expired = [k for k, v in self._last_update.items() if now - v > self.CACHE_TTL]
+            for k in expired:
+                self._ticker_cache.pop(k, None)
+                self._last_update.pop(k, None)
+                
+    async def initialize(self) -> bool:
+        """Initialize exchange connection"""
+        try:
+            self.exchange = self.exchange_manager.exchange
+            await self.exchange.load_markets()
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange: {e}")
             return False
 
     async def _rate_limit_request(self) -> None:
@@ -122,45 +137,19 @@ class ExchangeInterface:
             handle_error(e, "ExchangeInterface.fetch_ticker", logger=self.logger)
             return None
 
-    async def place_order(self, 
-                         symbol: str, 
-                         side: str, 
-                         size: Decimal, 
-                         price: Optional[Decimal] = None) -> Optional[Dict]:
-        """Place order with retry logic and validation"""
-        async with self._lock:
-            try:
-                # Validate order parameters
-                if not await self._validate_order_params(symbol, size):
-                    return None
-                    
-                # Format order
-                order = {
-                    'symbol': symbol,
-                    'side': side.upper(),
-                    'size': self.nh.round_decimal(size, 8),
-                    'type': 'MARKET' if price is None else 'LIMIT',
-                }
-                if price:
-                    order['price'] = self.nh.round_decimal(price, 8)
-                    
-                # Place order with retry
-                for attempt in range(3):
-                    try:
-                        result = await self.ctx.exchange.create_order(**order)
-                        self.order_cache[result['id']] = {
-                            **result,
-                            'timestamp': datetime.utcnow()
-                        }
-                        return result
-                    except Exception as e:
-                        if attempt == 2:  # Last attempt
-                            raise
-                        await asyncio.sleep(1)  # Wait before retry
-                        
-            except Exception as e:
-                self.ctx.logger.error(f"Order placement failed: {e}")
-                return None
+    async def place_order(self, symbol: str, side: str, amount: float, price: Optional[float] = None) -> Optional[Dict]:
+        try:
+            order_type = "market" if price is None else "limit"
+            return await self.exchange_manager.create_order(
+            symbol=symbol,
+            order_type=order_type,
+            side=side,
+            amount=Decimal(str(amount)),
+            price=Decimal(str(price)) if price else None
+        )
+        except Exception as e:
+            self.logger.error(f"Failed to place order: {e}")
+        return None
                 
     async def _validate_order_params(self, 
                                    symbol: str, 
@@ -194,7 +183,7 @@ class ExchangeInterface:
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel order with verification"""
         try:
-            await self.ctx.exchange.cancel_order(order_id)
+            await self.exchange.cancel_order(order_id)
             if order_id in self.order_cache:
                 del self.order_cache[order_id]
             return True
@@ -246,13 +235,13 @@ class ExchangeInterface:
             return None
 
     async def close(self) -> None:
-        """Properly close exchange connection"""
-        if self.exchange:
-            try:
+        """Properly close all resources"""
+        try:
+            if self.exchange:
                 await self.exchange.close()
-                self.logger.info("Exchange connection closed")
-            except Exception as e:
-                handle_error(e, "ExchangeInterface.close", logger=self.logger)
+            await self._cleanup_cache()
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     async def execute_trade(
         self,
@@ -354,14 +343,14 @@ class ExchangeInterface:
         
         # Check cache
         if (symbol in self._ticker_cache and
-            symbol in self._last_ticker_update and
-            now - self._last_ticker_update[symbol] < timedelta(seconds=max_age)):
+            symbol in self._last_update and
+            now - self._last_update[symbol] < timedelta(seconds=max_age)):
             return self._ticker_cache[symbol]
         
         # Fetch new data
         ticker = await self.exchange.fetch_ticker(symbol)
         self._ticker_cache[symbol] = ticker
-        self._last_ticker_update[symbol] = now
+        self._last_update[symbol] = now
         
         return ticker
     
@@ -438,3 +427,17 @@ class ExchangeInterface:
         except Exception as e:
             self.logger.error(f"Failed to store trade details: {str(e)}")
             # Don't raise - this is non-critical
+
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1m', limit: int = 100) -> List[List]:
+        """Fetch OHLCV candles with proper error handling"""
+        try:
+            if not self.exchange:
+                raise ValueError("Exchange not initialized")
+                
+            await self._rate_limit_request()
+            candles = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            return candles
+            
+        except Exception as e:
+            self.logger.error(f"Failed to fetch OHLCV data: {e}")
+            return []

@@ -110,3 +110,28 @@ class DatabaseConnection:
                     }
                 )
                 raise DatabaseError("Query execution failed") from e 
+
+class DBConnection:
+    def __init__(self, pool: Any):
+        self.pool = pool
+        self.conn = None
+        self.tx = None
+        
+    async def __aenter__(self):
+        self.conn = await self.pool.acquire()
+        self.tx = self.conn.transaction()
+        await self.tx.start()
+        return self
+        
+    async def __aexit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                await self.tx.commit()
+            else:
+                await self.tx.rollback()
+        finally:
+            await self.pool.release(self.conn)
+            
+    async def execute_sql(self, query: str, params: tuple) -> List[Any]:
+        """Execute SQL with proper parameter binding"""
+        return await self.conn.fetch(query, *params) 

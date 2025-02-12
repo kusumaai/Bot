@@ -26,23 +26,27 @@ class RiskManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.logger = ctx.logger
-        self.limits = RiskLimits.from_config(ctx.config)
-        if not self.limits:
-            raise ValueError("Failed to initialize risk limits")
-        self.portfolio = PortfolioManager(self.limits)
+        self._lock = asyncio.Lock()
+        self.position_limits = self._load_position_limits()
+        self.risk_limits = {
+            'max_position_size': Decimal(str(ctx.config.get('max_position_pct', 10))) / Decimal('100'),
+            'max_drawdown': Decimal(str(ctx.config.get('max_drawdown', 10))) / Decimal('100'),
+            'max_daily_loss': Decimal(str(ctx.config.get('max_daily_loss', 3))) / Decimal('100')
+        }
+        self.portfolio = PortfolioManager(self.risk_limits)
         self.nh = NumericHandler()  # Use our new numeric handler
         
     def validate_position(self, symbol: str, size: Decimal, price: Decimal) -> Tuple[bool, Optional[str]]:
         """Validate a new position against all risk limits"""
         try:
             # Check max positions
-            if len(self.portfolio.positions) >= self.limits.max_positions:
+            if len(self.portfolio.positions) >= self.risk_limits['max_position_size']:
                 return False, "Maximum positions limit reached"
                 
             # Check position size
             position_value = size * price
             portfolio_value = self.portfolio.calculate_portfolio_value()
-            if position_value / portfolio_value > self.limits.max_position_size:
+            if position_value / portfolio_value > self.risk_limits['max_position_size']:
                 return False, "Position size exceeds maximum allowed"
                 
             # Check leverage
@@ -51,17 +55,17 @@ class RiskManager:
                 for p in self.portfolio.positions.values()
             ) + position_value
             
-            if total_exposure / portfolio_value > self.limits.max_leverage:
+            if total_exposure / portfolio_value > self.risk_limits['max_position_size']:
                 return False, "Leverage limit exceeded"
                 
             # Check drawdown
-            if self.portfolio.calculate_drawdown() > self.limits.max_drawdown:
+            if self.portfolio.calculate_drawdown() > self.risk_limits['max_drawdown']:
                 return False, "Maximum drawdown reached"
                 
             # Check correlation if multiple positions
             if len(self.portfolio.positions) > 0:
                 correlation = self._calculate_position_correlation(symbol)
-                if correlation > self.limits.max_correlation:
+                if correlation > self.risk_limits['max_position_size']:
                     return False, "Position correlation too high"
                 
             return True, None
@@ -96,10 +100,10 @@ class RiskManager:
                 )
                 
                 # Apply risk factor scaling
-                size *= self.limits.risk_factor
+                size *= self.risk_limits['max_position_size']
                 
                 # Calculate stops based on volatility
-                atr = Decimal(str(market_data.get("ATR_14", self.limits.emergency_stop_pct)))
+                atr = Decimal(str(market_data.get("ATR_14", self.risk_limits['max_position_size'])))
                 stop_loss = current_price * (Decimal(1) - atr)
                 take_profit = current_price * (Decimal(1) + atr * Decimal(2))
                 
@@ -107,7 +111,7 @@ class RiskManager:
                     "size": size,
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
-                    "trailing_stop": self.limits.trailing_stop_pct
+                    "trailing_stop": self.risk_limits['max_position_size']
                 }
                 
         except Exception as e:
@@ -135,7 +139,7 @@ class RiskManager:
                     })
                     
                 # Check max adverse excursion
-                if position.max_adverse_excursion < -self.limits.max_adverse_pct:
+                if position.max_adverse_excursion < -self.risk_limits['max_position_size']:
                     positions_to_close.append({
                         "symbol": symbol,
                         "reason": "max_adverse_excursion",
@@ -178,7 +182,7 @@ class RiskManager:
             kelly_fraction = max(Decimal(0), min(kelly_fraction, Decimal(1)))
             
             # Apply Kelly scaling factor
-            return kelly_fraction * self.limits.kelly_scaling
+            return kelly_fraction * self.risk_limits['max_position_size']
             
         except Exception as e:
             handle_error(e, "RiskManager._calculate_kelly_position_size", logger=self.logger)
@@ -196,13 +200,37 @@ class RiskManager:
         try:
             price = self.nh.to_decimal(signal['price'])
             account_size = await self.get_account_size()
-            risk_factor = self.nh.percentage_to_decimal(self.limits.risk_factor)
+            risk_factor = self.nh.percentage_to_decimal(self.risk_limits['max_position_size'])
             
             position_size = account_size * risk_factor
             return min(
                 position_size,
-                self.limits.max_position_size * account_size
+                self.risk_limits['max_position_size'] * account_size
             )
         except Exception as e:
             self.logger.error(f"Position size calculation failed: {e}")
-            return Decimal('0') 
+            return Decimal('0')
+
+    async def validate_order(self, order: Dict[str, Any]) -> bool:
+        async with self._lock:
+            try:
+                position_size = Decimal(str(order['amount']))
+                symbol = order['symbol']
+                
+                if not await self._check_position_limits(symbol, position_size):
+                    return False
+                    
+                if not await self._check_risk_limits(position_size):
+                    return False
+                    
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Order validation failed: {e}")
+                return False
+
+    async def _check_position_limits(self, symbol: str, size: Decimal) -> bool:
+        limits = self.position_limits.get(symbol, {})
+        min_size = Decimal(str(limits.get('min_qty', 0)))
+        max_size = Decimal(str(limits.get('max_qty', float('inf'))))
+        return min_size <= size <= max_size 

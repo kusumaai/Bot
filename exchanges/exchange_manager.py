@@ -40,35 +40,39 @@ class RateLimiter:
         Args:
             endpoint: API endpoint identifier
         """
-        if endpoint not in self.limits:
-            return
+        try:
+            if endpoint not in self.limits:
+                return
             
-        limit = self.limits[endpoint]
-        now = time.time()
-        window_start = now - limit.time_window
-        
-        # Clean old timestamps
-        self.request_timestamps[endpoint] = [
-            ts for ts in self.request_timestamps[endpoint]
-            if ts > window_start
-        ]
-        
-        # Check if we're at the limit
-        while len(self.request_timestamps[endpoint]) >= limit.max_requests:
-            sleep_time = (
-                self.request_timestamps[endpoint][0] +
-                limit.time_window - now
-            )
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
+            limit = self.limits[endpoint]
             now = time.time()
             window_start = now - limit.time_window
+            
+            # Clean old timestamps
             self.request_timestamps[endpoint] = [
                 ts for ts in self.request_timestamps[endpoint]
                 if ts > window_start
             ]
-        
-        self.request_timestamps[endpoint].append(now)
+            
+            # Check if we're at the limit
+            while len(self.request_timestamps[endpoint]) >= limit.max_requests:
+                sleep_time = (
+                    self.request_timestamps[endpoint][0] +
+                    limit.time_window - now
+                )
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+                now = time.time()
+                window_start = now - limit.time_window
+                self.request_timestamps[endpoint] = [
+                    ts for ts in self.request_timestamps[endpoint]
+                    if ts > window_start
+                ]
+            
+            self.request_timestamps[endpoint].append(now)
+        except Exception as e:
+            logging.error(f"Rate limiter error: {e}")
+            await asyncio.sleep(1)  # Fallback delay
 
 class ExchangeManager:
     """Manages exchange interactions with proper rate limiting and error handling"""
@@ -78,32 +82,44 @@ class ExchangeManager:
         exchange_id: str,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        logger: Optional[logging.Logger] = None,
-        db_queries: Optional[DatabaseQueries] = None
+        sandbox: bool = True,
+        logger: Optional[logging.Logger] = None
     ):
-        self.exchange_id = exchange_id
         self.logger = logger or logging.getLogger(__name__)
-        self.db_queries = db_queries
+        self._lock = asyncio.Lock()
+        self.exchange = None
+        self.db_queries = None
         
-        # Initialize exchange
-        exchange_class = getattr(ccxt, exchange_id)
-        self.exchange = exchange_class({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        })
-        
-        # Setup rate limiter
+        # Initialize rate limiter with proper error handling
         self.rate_limiter = RateLimiter({
-            'market': RateLimit(20, 60),    # 20 requests per minute
-            'trade': RateLimit(10, 60),     # 10 trades per minute
-            'order': RateLimit(50, 60),     # 50 order queries per minute
-            'position': RateLimit(10, 60)   # 10 position queries per minute
+            'market': RateLimit(20, 60),
+            'trade': RateLimit(10, 60),
+            'order': RateLimit(50, 60),
+            'position': RateLimit(10, 60)
         })
+        
+        try:
+            self._initialize_exchange(
+                exchange_id=exchange_id,
+                api_key=api_key,
+                api_secret=api_secret,
+                sandbox=sandbox
+            )
+            
+            if not self.is_paper:
+                self.db_queries = DatabaseQueries(logger=self.logger)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange: {str(e)}")
+            raise ExchangeError(f"Exchange initialization failed: {str(e)}")
         
         self._markets: Optional[Dict[str, Any]] = None
         self._last_market_update: Optional[datetime] = None
+        
+        # Add paper trading flag and methods
+        if self.is_paper:
+            self.paper_balances = {'USDT': 10000.0}  # Default paper balance
+            self.paper_positions = {}
     
     async def __aenter__(self):
         """Async context manager entry"""
@@ -224,3 +240,33 @@ class ExchangeManager:
             return await self.exchange.fetch_open_orders(symbol)
         except Exception as e:
             raise ExchangeError(f"Failed to fetch open orders: {str(e)}")
+
+    async def _initialize_exchange(self, **kwargs) -> None:
+        """Safely initialize exchange with validation"""
+        self.is_paper = kwargs['exchange_id'] == 'paper'
+        exchange_id = 'binance' if self.is_paper else kwargs['exchange_id']
+        
+        if not hasattr(ccxt, exchange_id):
+            raise ValueError(f"Exchange {exchange_id} not supported")
+            
+        exchange_class = getattr(ccxt, exchange_id)
+        config = self._build_exchange_config(**kwargs)
+        self.exchange = exchange_class(config)
+        
+    def _build_exchange_config(self, **kwargs) -> dict:
+        """Build validated exchange configuration"""
+        config = {
+            'enableRateLimit': True,
+            'timeout': int(kwargs.get('timeout', 30000))
+        }
+        
+        if not self.is_paper and kwargs.get('api_key') and kwargs.get('api_secret'):
+            config.update({
+                'apiKey': kwargs['api_key'],
+                'secret': kwargs['api_secret']
+            })
+            
+        if kwargs.get('sandbox', True) and not self.is_paper:
+            config['sandbox'] = True
+            
+        return config

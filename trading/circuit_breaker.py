@@ -14,6 +14,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 
+
 from utils.numeric import NumericHandler
 from risk.limits import RiskLimits
 from risk.position import Position
@@ -25,6 +26,9 @@ class CircuitBreakerState(Enum):
     NORMAL = "NORMAL"
     WARNING = "WARNING" 
     TRIGGERED = "TRIGGERED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
+    CLOSED = "CLOSED"
 
 class CircuitBreaker:
     def __init__(

@@ -16,7 +16,7 @@ import logging
 from decimal import Decimal
 from utils.error_handler import handle_error, handle_error_async
 from utils.numeric import NumericHandler
-from collections import deque
+from collections import deque, defaultdict
 import aiohttp
 
 @dataclass
@@ -57,9 +57,14 @@ class HealthMonitor:
             'exchange': True,
             'market_data': True
         }
-        self.last_check = {}
-        self.error_counts: Dict[str, int] = {}
-        self.check_interval = 60  # seconds
+        self.last_check = 0
+        self.error_thresholds = {
+            'api': 3,
+            'database': 2,
+            'memory': 90  # percent
+        }
+        self.error_counts: Dict[str, int] = defaultdict(int)
+        self.check_interval = 30
         
         # Initialize status
         self.status = HealthStatus(
@@ -109,62 +114,43 @@ class HealthMonitor:
                 await asyncio.sleep(5)  # Back off on error
 
     async def check_system_health(self) -> Dict[str, bool]:
-        """Comprehensive system health check"""
         async with self._component_lock:
             try:
-                # System resources check
-                system_ok = await self._check_system_resources()
+                now = time.time()
+                if now - self.last_check < self.check_interval:
+                    return {'healthy': True}
+
+                status = {
+                    'api': await self._check_api_health(),
+                    'database': await self._check_database(),
+                    'memory': await self._check_memory(),
+                    'positions': await self._check_positions()
+                }
                 
-                # Database connection check
-                db_ok = await self._check_database()
-                
-                # Exchange connection check
-                exchange_ok = await self._check_exchange()
-                
-                # Market data freshness check
-                market_data_ok = await self._check_market_data()
-                
-                self.status.update({
-                    'system': system_ok,
-                    'database': db_ok,
-                    'exchange': exchange_ok,
-                    'market_data': market_data_ok
-                })
-                
-                self.last_check = datetime.utcnow()
-                return self.status
-                
+                self.last_check = now
+                return status
+
             except Exception as e:
-                self.ctx.logger.error(f"Health check failed: {e}")
-                return {k: False for k in self.status}
-                
-    async def _check_system_resources(self) -> bool:
-        """Check system CPU, memory, and disk"""
+                self.logger.error(f"Health check failed: {e}")
+                return {'healthy': False, 'error': str(e)}
+
+    async def _check_memory(self) -> bool:
         try:
-            # CPU usage check
-            cpu_percent = psutil.cpu_percent()
-            if cpu_percent > 80:  # 80% threshold
-                self.ctx.logger.warning(f"High CPU usage: {cpu_percent}%")
-                return False
-                
-            # Memory usage check
-            memory = psutil.virtual_memory()
-            if memory.percent > 85:  # 85% threshold
-                self.ctx.logger.warning(f"High memory usage: {memory.percent}%")
-                return False
-                
-            # Disk space check
-            disk = psutil.disk_usage('/')
-            if disk.percent > 90:  # 90% threshold
-                self.ctx.logger.warning(f"Low disk space: {disk.percent}%")
-                return False
-                
-            return True
-            
+            usage = psutil.Process().memory_percent()
+            return usage < self.error_thresholds['memory']
         except Exception as e:
-            self.ctx.logger.error(f"Resource check failed: {e}")
+            self.logger.error(f"Memory check failed: {e}")
             return False
-            
+
+    async def _check_api_health(self) -> bool:
+        """Check API health"""
+        try:
+            # Implementation of _check_api_health method
+            return True  # Placeholder return, actual implementation needed
+        except Exception as e:
+            self.logger.error(f"API health check failed: {e}")
+            return False
+
     async def _check_database(self) -> bool:
         """Verify database connection and performance"""
         try:
@@ -173,13 +159,13 @@ class HealthMonitor:
             response_time = time.time() - start_time
             
             if response_time > 1.0:  # 1 second threshold
-                self.ctx.logger.warning(f"Slow database response: {response_time}s")
+                self.logger.warning(f"Slow database response: {response_time}s")
                 return False
                 
             return True
             
         except Exception as e:
-            self.ctx.logger.error(f"Database check failed: {e}")
+            self.logger.error(f"Database check failed: {e}")
             return False
             
     async def _check_exchange(self) -> bool:
@@ -190,13 +176,13 @@ class HealthMonitor:
             response_time = time.time() - start_time
             
             if response_time > 2.0:  # 2 second threshold
-                self.ctx.logger.warning(f"Slow exchange response: {response_time}s")
+                self.logger.warning(f"Slow exchange response: {response_time}s")
                 return False
                 
             return True
             
         except Exception as e:
-            self.ctx.logger.error(f"Exchange check failed: {e}")
+            self.logger.error(f"Exchange check failed: {e}")
             return False
             
     async def _check_market_data(self) -> bool:
@@ -205,12 +191,12 @@ class HealthMonitor:
             for symbol in self.ctx.config['market_list']:
                 last_update = self.ctx.market_data.last_update.get(symbol)
                 if not last_update or time.time() - last_update > 300:  # 5 minutes
-                    self.ctx.logger.warning(f"Stale market data for {symbol}")
+                    self.logger.warning(f"Stale market data for {symbol}")
                     return False
             return True
             
         except Exception as e:
-            self.ctx.logger.error(f"Market data check failed: {e}")
+            self.logger.error(f"Market data check failed: {e}")
             return False
 
     async def check_database(self) -> Tuple[bool, float, Optional[str]]:

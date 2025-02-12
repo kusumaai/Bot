@@ -6,11 +6,13 @@ Centralized error handling utility
 
 import logging
 import traceback
-from typing import Optional, Dict, Any, Type, TYPE_CHECKING
+from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
 from datetime import datetime
 import json
 import asyncio
 from pathlib import Path
+import time
+from collections import defaultdict
 
 if TYPE_CHECKING:
     from database.database import DBConnection
@@ -246,3 +248,47 @@ def handle_error(
         logger.error(f"Error in {context}: {json.dumps(error_info)}")
     
     # For sync version, we'll just log but not store in DB to avoid sync/async conflicts 
+
+class ErrorTracker:
+    def __init__(self, logger: logging.Logger):
+        self._lock = asyncio.Lock()
+        self.logger = logger
+        self.errors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self.MAX_ERRORS = 100
+        self.CLEANUP_INTERVAL = 3600  # 1 hour
+
+    async def track_error(
+        self,
+        error: Exception,
+        context: str,
+        severity: str = 'ERROR'
+    ) -> None:
+        async with self._lock:
+            try:
+                error_entry = {
+                    'timestamp': int(time.time()),
+                    'type': type(error).__name__,
+                    'message': str(error),
+                    'context': context,
+                    'severity': severity
+                }
+                
+                self.errors[context].append(error_entry)
+                await self._cleanup_old_errors()
+                
+                if severity in ['ERROR', 'CRITICAL']:
+                    self.logger.error(
+                        f"{severity} in {context}: {str(error)}",
+                        exc_info=True
+                    )
+                    
+            except Exception as e:
+                self.logger.error(f"Error tracking failed: {e}")
+
+    async def _cleanup_old_errors(self) -> None:
+        now = int(time.time())
+        for context in list(self.errors.keys()):
+            self.errors[context] = [
+                e for e in self.errors[context]
+                if now - e['timestamp'] < self.CLEANUP_INTERVAL
+            ][:self.MAX_ERRORS] 

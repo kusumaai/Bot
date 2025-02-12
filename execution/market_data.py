@@ -40,6 +40,7 @@ class MarketData:
         self.update_interval = 60  # seconds
         self._lock = asyncio.Lock()
         self.cache_timeout = ctx.config.get("market_data_cache_timeout", 60)  # seconds
+        self.CACHE_TTL = 300
 
     async def load_candles(self, symbol: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """Load and process candle data with proper error handling"""
@@ -167,48 +168,43 @@ class MarketData:
             }
 
     async def load_market_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
-        """Load market data for multiple symbols concurrently"""
-        async with self._lock:
-            tasks = []
-            for symbol in symbols:
-                if not self._is_cache_valid(symbol):
-                    tasks.append(self._fetch_symbol_data(symbol))
-            
-            # Fetch all data concurrently
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for symbol, result in zip(symbols, results):
-                    if not isinstance(result, Exception):
-                        self.data_cache[symbol] = result
-                        self.last_update[symbol] = time.time()
-                    else:
-                        self.logger.error(f"Failed to fetch {symbol}: {result}")
-            
-            return {s: self.data_cache[s] for s in symbols if s in self.data_cache}
-    
+        try:
+            async with self._lock:
+                tasks = []
+                for symbol in symbols:
+                    if not self._is_cache_valid(symbol):
+                        tasks.append(self._fetch_symbol_data(symbol))
+                
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    await self._process_results(symbols, results)
+                    
+                return {s: self.data_cache[s] for s in symbols if s in self.data_cache}
+                
+        except Exception as e:
+            self.logger.error(f"Market data load failed: {e}")
+            return {}
+
     async def _fetch_symbol_data(self, symbol: str) -> pd.DataFrame:
-        """Fetch data for a single symbol"""
         try:
             raw_data = await self.ctx.exchange_interface.fetch_ohlcv(
                 symbol,
                 timeframe=self.ctx.config['timeframe'],
-                limit=500  # Configurable
+                limit=500
             )
-            
-            df = pd.DataFrame(raw_data, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume'
-            ])
-            
-            # Convert prices to Decimal
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].apply(self.nh.to_decimal)
-            
-            return df
-            
+            return self._process_ohlcv(raw_data)
         except Exception as e:
-            self.logger.error(f"Error fetching data for {symbol}: {e}")
+            self.logger.error(f"Error fetching {symbol}: {e}")
             raise
-    
+
+    def _process_ohlcv(self, raw_data: List[List]) -> pd.DataFrame:
+        df = pd.DataFrame(raw_data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume'
+        ])
+        for col in ['open', 'high', 'low', 'close']:
+            df[col] = df[col].apply(self.nh.to_decimal)
+        return df
+
     def _is_cache_valid(self, symbol: str) -> bool:
         """Check if cached data is still valid"""
         return (
@@ -269,6 +265,14 @@ class MarketData:
                 
         except Exception as e:
             handle_error(e, "MarketData.clear_cache", logger=self.logger)
+
+    async def _process_results(self, symbols: List[str], results: List[pd.DataFrame]):
+        for symbol, result in zip(symbols, results):
+            if not isinstance(result, Exception):
+                self.data_cache[symbol] = result
+                self.last_update[symbol] = time.time()
+            else:
+                self.logger.error(f"Failed to fetch {symbol}: {result}")
 
 if __name__ == "__main__":
     import asyncio
