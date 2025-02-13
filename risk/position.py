@@ -4,7 +4,7 @@ Module: risk/position.py
 Core position tracking with risk metrics
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, Optional, Tuple
 import time
@@ -17,6 +17,7 @@ from datetime import datetime
 @dataclass
 class Position:
     """Trading position with standardized decimal handling and risk tracking"""
+    # Required fields (no defaults)
     symbol: str
     direction: str
     entry_price: Decimal
@@ -26,10 +27,12 @@ class Position:
     stop_loss: Decimal
     take_profit: Decimal
     unrealized_pnl: Decimal
+    
+    # Optional fields (with defaults)
     max_adverse_excursion: Decimal = Decimal(0)
     max_favorable_excursion: Decimal = Decimal(0)
     trailing_stop: Optional[Decimal] = None
-    last_update_time: float = time.time()
+    last_update_time: float = field(default_factory=time.time)
     closed: bool = False
     exit_price: Optional[Decimal] = None
     exit_time: Optional[datetime] = None

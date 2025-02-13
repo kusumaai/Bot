@@ -15,6 +15,10 @@ class PositionError(Exception):
     """Exception related to position management."""
     pass
 
+class PositionUpdateError(Exception):
+    """Exception related to position management."""
+    pass
+
 class InvalidOrderError(TradingBotError):
     """Exception raised for invalid order operations."""
     pass

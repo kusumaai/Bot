@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, List, Dict, Any
 import logging
 import pandas as pd
 from decimal import Decimal
@@ -6,6 +6,7 @@ from utils.numeric_handler import NumericHandler
 from utils.error_handler import handle_error, ValidationError
 from utils.exceptions import MarketDataValidationError
 from typing import Dict, Any
+from dataclasses import dataclass, field
 
 class DataValidator:
     def __init__(self, logger: logging.Logger):
@@ -52,4 +53,16 @@ class DataValidator:
 
         except Exception as e:
             self.logger.error(f"Market data validation failed: {e}")
-            return False 
+            return False
+
+@dataclass
+class ValidationResult:
+    # Required fields (no defaults)
+    is_valid: bool
+    validation_type: str
+    timestamp: float
+    
+    # Optional fields (with defaults)
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict) 

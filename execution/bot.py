@@ -8,16 +8,15 @@ import json
 import asyncio
 import time
 import logging
+
 from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-from config import load_config
-
+from config.config import load_config 
 from risk.manager import RiskManager
 from trading.portfolio import PortfolioManager
 from risk.validation import MarketDataValidation
 from execution.market_data import MarketData
-from models.ga_signal import generate_ml_signals
 from signals.ga_synergy import generate_ga_signals
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import InvalidOrderError
@@ -33,7 +32,7 @@ from execution.main_loop import main_loop
 class TradingContext:
     """Trading context maintaining all component instances and state"""
     def __init__(self):
-        self.config = None
+        self.config = load_config()
         self.logger = setup_logging(name="TradingBot", level="INFO")
         self.running = True
         self.exchange_interface = None
@@ -46,10 +45,18 @@ class TradingContext:
         self.market_validator = None
         self.last_health_check = 0
         self.last_metrics_update = 0
+        self.db_queries = None
 
 async def initialize_components(ctx: TradingContext) -> bool:
     """Initialize all trading components in dependency order"""
     try:
+        # Initialize database queries first
+        ctx.db_queries = DatabaseQueries(ctx.config)
+        
+        # Initialize risk manager before portfolio manager
+        ctx.risk_manager = RiskManager(ctx)
+        await ctx.risk_manager.initialize()
+        
         # Initialize exchange interface
         ctx.exchange_interface = ExchangeInterface(ctx)
         if not await ctx.exchange_interface.initialize():
@@ -60,13 +67,9 @@ async def initialize_components(ctx: TradingContext) -> bool:
         ctx.market_data = MarketData(ctx)
         await ctx.market_data.initialize()
         
-        # Initialize portfolio manager
+        # Initialize portfolio manager after risk manager
         ctx.portfolio_manager = PortfolioManager(ctx.risk_manager.risk_limits, logger=ctx.logger)
         await ctx.portfolio_manager.initialize()
-        
-        # Initialize risk manager
-        ctx.risk_manager = RiskManager(ctx)
-        await ctx.risk_manager.initialize()
         
         # Initialize circuit breaker
         ctx.circuit_breaker = CircuitBreaker(ctx.db_queries, ctx.logger)

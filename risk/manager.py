@@ -16,7 +16,7 @@ from .position import Position
 from .limits import RiskLimits
 from .portfolio import PortfolioManager
 from .validation import MarketDataValidation
-from .exceptions import RiskManagerError
+from utils.exceptions import RiskManagerError
 from utils.numeric import NumericHandler
 
 class RiskManager:

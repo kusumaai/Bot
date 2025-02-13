@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, Any
 
 @dataclass
 class PositionInfo:
+    # Required fields (no defaults)
     symbol: str
     side: str  # 'buy' or 'sell'
     entry_price: Decimal
@@ -15,5 +16,7 @@ class PositionInfo:
     stop_loss: Decimal
     take_profit: Decimal
     strategy: str
-    metadata: Dict[str, Any] = None
+    
+    # Optional fields (with defaults)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     # Add other relevant fields as needed 

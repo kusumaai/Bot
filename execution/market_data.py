@@ -13,16 +13,19 @@ import asyncio
 import time
 import logging
 
-from database.database import DBConnection, execute_sql
+from database.database import DatabaseQueries, execute_sql
 from utils.error_handler import handle_error
 from indicators.indicators_pta import compute_indicators
 from indicators.quality_monitor import quality_check
-from signals.ga_synergy import prepare_market_state
 from trading.math import calculate_log_returns, estimate_volatility
 from utils.numeric import NumericHandler
 from trading.exceptions import MarketDataError, InvalidMarketDataError
 from execution.exchange_interface import ExchangeInterface
-from risk.exceptions import MarketDataValidationError
+from utils.exceptions import MarketDataValidationError
+from utils.error_handler import handle_error_async
+from risk.validation import MarketDataValidation
+from signals.market_state import prepare_market_state
+from types.base_types import MarketState
 
 DEFAULT_MIN_TRADE_VALUE = Decimal('10.0')  # 10 USDT minimum by default
 
@@ -47,6 +50,32 @@ class MarketData:
         self.cache_timeout = ctx.config.get("market_data_cache_timeout", 60)  # seconds
         self.CACHE_TTL = 300
         self.max_cache_size = 1000  # Limit to prevent unbounded growth
+        self.validation = MarketDataValidation(self.ctx.risk_manager.risk_limits, self.logger)
+        self.cache = {}
+
+    async def initialize(self):
+        # Initialization logic
+        pass
+
+    async def get_signals(self) -> List[Dict[str, Any]]:
+        try:
+            data = await self.fetch_market_data()
+            if self.validation.validate_market_data(data):
+                market_state = prepare_market_state(data)  # Using new market state analysis
+                # Process data to generate signals
+                return []
+            else:
+                raise MarketDataValidationError("Invalid market data received.")
+        except MarketDataValidationError as e:
+            await handle_error_async(e, "MarketData.get_signals", self.logger)
+            return []
+        except Exception as e:
+            await handle_error_async(e, "MarketData.get_signals", self.logger)
+            return []
+
+    async def fetch_market_data(self) -> Any:
+        # Implementation to fetch market data
+        return {}
 
     async def load_candles(self, symbol: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """Load and process candle data with proper error handling"""
@@ -58,7 +87,7 @@ class MarketData:
                 if (datetime.now() - cached_data["timestamp"]).total_seconds() < self.cache_timeout:
                     return cached_data["df"], cached_data["market_data"]
 
-            with DBConnection(self.ctx.db_pool) as conn:
+            with DatabaseQueries(self.ctx.db_pool) as conn:
                 rows = execute_sql(
                     conn,
                     """
@@ -243,7 +272,7 @@ class MarketData:
         
         for symbol in self.ctx.config.get("market_list", []):
             try:
-                with DBConnection(self.ctx.db_pool) as conn:
+                with DatabaseQueries(self.ctx.db_pool) as conn:
                     row = execute_sql(
                         conn,
                         """
@@ -325,6 +354,21 @@ class MarketData:
         async with self._lock:
             self.data_cache.clear()
             self.logger.info("Cleared all market data caches.")
+
+    def get_market_state(self, symbol: str) -> Optional[MarketState]:
+        try:
+            if symbol not in self.cache:
+                return None
+            data = self.cache[symbol]
+            return MarketState(
+                symbol=symbol,
+                price=data['price'],
+                volume=data['volume'],
+                timestamp=data['timestamp']
+            )
+        except Exception as e:
+            handle_error(e, "MarketData.get_market_state")
+            return None
 
 if __name__ == "__main__":
     import asyncio

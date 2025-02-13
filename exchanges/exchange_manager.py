@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import time
 from dataclasses import dataclass
 
-from database.database import DBConnection, execute_sql
+from database.database import DatabaseQueries, execute_sql
 from utils.error_handler import handle_error, ExchangeError
 from database.queries import DatabaseQueries
 from utils.numeric_handler import NumericHandler

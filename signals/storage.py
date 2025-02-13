@@ -8,12 +8,12 @@ import datetime
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
 import logging
-
-from database.database import DBConnection, execute_sql, execute_sql_one
+from datetime import datetime 
+from database.database import DatabaseQueries, execute_sql
 from utils.error_handler import handle_error
 from signals.trading_types import TradingRule
-from database.queries import DatabaseQueries
 from utils.error_handler import DatabaseError
+from utils.logger import get_logger
 
 def store_rule(rule: Dict[str, Any], ctx: Any) -> bool:
     """Store trading rule in database if it's better than current best"""
@@ -25,9 +25,9 @@ def store_rule(rule: Dict[str, Any], ctx: Any) -> bool:
         if current_fitness is None or current_fitness <= 0:
             return False
             
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseQueries(ctx.db_pool) as conn:
             # Get current best fitness
-            row = execute_sql_one(
+            row = execute_sql(
                 conn,
                 """
                 SELECT MAX(fitness) as best_fitness 
@@ -75,8 +75,8 @@ def store_rule(rule: Dict[str, Any], ctx: Any) -> bool:
 def load_best_rule(ctx: Any) -> Optional[Dict[str, Any]]:
     """Load best performing rule from database with validation"""
     try:
-        with DBConnection(ctx.db_pool) as conn:
-            row = execute_sql_one(
+        with DatabaseQueries(ctx.db_pool) as conn:
+            row = execute_sql(
                 conn,
                 """
                 SELECT chromosome_json, fitness, date_created
@@ -106,8 +106,8 @@ def load_best_rule(ctx: Any) -> Optional[Dict[str, Any]]:
 def get_rule_stats(ctx: Any) -> Dict[str, Any]:
     """Get statistics about stored rules"""
     try:
-        with DBConnection(ctx.db_pool) as conn:
-            stats = execute_sql_one(
+        with DatabaseQueries(ctx.db_pool) as conn:
+            stats = execute_sql(
                 conn,
                 """
                 SELECT 
@@ -127,11 +127,77 @@ def get_rule_stats(ctx: Any) -> Dict[str, Any]:
         handle_error(e, "storage.get_rule_stats", logger=ctx.logger)
         return {}
 
-class SignalStorage:
-    def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
+class Storage:
+    def __init__(self, db_queries: DatabaseQueries):
         self.db = db_queries
-        self.logger = logger
-        
+        self.logger = get_logger(__name__)
+
+    async def store_trade(self, trade_data: Dict[str, Any]) -> bool:
+        """Store trade data in database"""
+        try:
+            async with self.db.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO trades (
+                        exchange_id, symbol, side, quantity, price, 
+                        timestamp, order_id, trade_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, 
+                trade_data['exchange_id'],
+                trade_data['symbol'],
+                trade_data['side'],
+                trade_data['quantity'],
+                trade_data['price'],
+                trade_data['timestamp'],
+                trade_data.get('order_id'),
+                trade_data.get('trade_id')
+                )
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to store trade: {e}")
+            return False
+
+    async def get_trades_by_timerange(
+        self, 
+        start_time: datetime,  # Correct type hint
+        end_time: datetime,    # Correct type hint
+        symbol: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get trades within a time range"""
+        try:
+            async with self.db.pool.acquire() as conn:
+                query = """
+                    SELECT * FROM trades 
+                    WHERE timestamp BETWEEN $1 AND $2
+                """
+                params = [start_time, end_time]
+                
+                if symbol:
+                    query += " AND symbol = $3"
+                    params.append(symbol)
+                
+                query += " ORDER BY timestamp DESC"
+                
+                rows = await conn.fetch(query, *params)
+                return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Failed to fetch trades: {e}")
+            return []
+
+    async def get_last_trade(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get the most recent trade for a symbol"""
+        try:
+            async with self.db.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT * FROM trades 
+                    WHERE symbol = $1 
+                    ORDER BY timestamp DESC 
+                    LIMIT 1
+                """, symbol)
+                return dict(row) if row else None
+        except Exception as e:
+            self.logger.error(f"Failed to fetch last trade: {e}")
+            return None
+
     async def store_signal(
         self,
         symbol: str,
@@ -140,30 +206,31 @@ class SignalStorage:
         strength: float,
         metadata: Optional[Dict[str, Any]] = None,
         expiry: Optional[datetime] = None
-    ) -> int:
+    ) -> bool:
+        """Store signal with market state metadata"""
         try:
-            query = """
-                INSERT INTO signals (
-                    symbol, signal_type, direction, strength,
-                    metadata, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """
-            
-            params = [
-                symbol,
-                signal_type,
-                direction,
-                strength,
-                json.dumps(metadata) if metadata else None,
-                datetime.utcnow().timestamp(),
-                expiry.timestamp() if expiry else None
-            ]
-            
-            result = await self.db.execute(query, params)
-            return result.lastrowid
-            
+            if metadata is None:
+                metadata = {}
+                
+            async with self.db.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO signals (
+                        symbol, signal_type, direction, strength, 
+                        metadata, timestamp, expiry
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                    symbol,
+                    signal_type,
+                    direction,
+                    Decimal(str(strength)),
+                    metadata,
+                    datetime.utcnow(),
+                    expiry
+                )
+            return True
         except Exception as e:
-            raise DatabaseError(f"Failed to store signal: {str(e)}")
+            self.logger.error(f"Failed to store signal: {e}")
+            return False
     
     async def get_active_signals(
         self,

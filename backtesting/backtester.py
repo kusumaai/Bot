@@ -7,7 +7,7 @@ Comprehensive backtesting framework with proper risk management
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 import uuid
@@ -37,6 +37,7 @@ from utils.numeric import NumericHandler
 @dataclass
 class BacktestResults:
     """Container for backtest results"""
+    # Required fields (no defaults)
     total_trades: int
     win_rate: float
     profit_factor: float
@@ -45,6 +46,12 @@ class BacktestResults:
     total_return: float
     trades: List[Dict[str, Any]]
     equity_curve: pd.Series
+    
+    # Optional fields (with defaults)
+    start_time: datetime = field(default_factory=datetime.now)
+    end_time: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    performance_metrics: Dict[str, float] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return (

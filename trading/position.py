@@ -8,11 +8,14 @@ from utils.exceptions import PositionUpdateError
 
 @dataclass
 class Position:
+    # Required fields (no defaults)
     symbol: str
     side: str
     entry_price: Decimal
     size: Decimal
     timestamp: int
+    
+    # Optional fields (with defaults)
     current_price: Decimal = Decimal('0')
     unrealized_pnl: Decimal = Decimal('0')
     realized_pnl: Decimal = Decimal('0')

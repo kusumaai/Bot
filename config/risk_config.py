@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import yaml
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 
 @dataclass
 class RiskConfig:
+    # Required fields (no defaults)
     max_position_size: Decimal
     max_positions: int
     max_leverage: Decimal
@@ -15,13 +16,15 @@ class RiskConfig:
     max_daily_loss: Decimal
     kelly_scaling: Decimal
     risk_factor: Decimal
-    ratchet_thresholds: List[Decimal]
-    ratchet_lock_ins: List[Decimal]
-    trailing_stop_pct: Decimal
-    max_adverse_pct: Decimal
-    max_hold_hours: Decimal
-    max_position_pct: Decimal
     initial_balance: Decimal
+    
+    # Optional fields (with defaults)
+    ratchet_thresholds: List[Decimal] = field(default_factory=list)
+    ratchet_lock_ins: List[Decimal] = field(default_factory=list)
+    trailing_stop_pct: Decimal = Decimal('0')
+    max_adverse_pct: Decimal = Decimal('0')
+    max_hold_hours: Decimal = Decimal('0')
+    max_position_pct: Decimal = Decimal('0')
 
     @classmethod
     def from_yaml(cls, path: str) -> 'RiskConfig':

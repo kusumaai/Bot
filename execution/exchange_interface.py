@@ -14,7 +14,7 @@ import uuid
 import logging
 
 from utils.error_handler import handle_error, handle_error_async, ExchangeError, ValidationError
-from database.database import DBConnection, execute_sql
+from database.database import DatabaseQueries, execute_sql
 from utils.numeric_handler import NumericHandler
 from exchanges.exchange_manager import ExchangeManager
 from database.queries import DatabaseQueries

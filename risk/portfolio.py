@@ -4,7 +4,7 @@ Module: risk/portfolio.py
 Portfolio management with proper risk tracking
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple
 import time
@@ -23,15 +23,19 @@ from trading.exceptions import PortfolioError
 @dataclass
 class PortfolioStats:
     """Portfolio performance statistics"""
+    # Required fields (no defaults)
     total_value: Decimal
+    cash_balance: Decimal
+    position_value: Decimal
     unrealized_pnl: Decimal
     realized_pnl: Decimal
-    drawdown: Decimal
-    peak_value: Decimal
-    daily_pnl: Decimal
-    total_exposure: Decimal
-    leverage: Decimal
-    position_count: int
+    
+    # Optional fields (with defaults)
+    margin_used: Decimal = Decimal('0')
+    free_margin: Decimal = Decimal('0')
+    risk_ratio: float = 0.0
+    exposure: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 class PortfolioManager:
     def __init__(self, risk_limits: Dict[str, Any]):
@@ -104,28 +108,30 @@ class PortfolioManager:
                 
                 return PortfolioStats(
                     total_value=total_value,
+                    cash_balance=self.balance,
+                    position_value=total_value - self.balance,
                     unrealized_pnl=unrealized_pnl,
                     realized_pnl=self.realized_pnl,
-                    drawdown=self.calculate_drawdown(),
-                    peak_value=self.peak_balance,
-                    daily_pnl=daily_pnl,
-                    total_exposure=total_exposure,
-                    leverage=leverage,
-                    position_count=len(self.positions)
+                    margin_used=Decimal('0'),
+                    free_margin=Decimal('0'),
+                    risk_ratio=leverage,
+                    exposure=total_exposure,
+                    metadata={}
                 )
                 
         except Exception as e:
             handle_error(e, "PortfolioManager.get_portfolio_stats", logger=self.logger)
             return PortfolioStats(
                 total_value=Decimal('0'),
+                cash_balance=Decimal('0'),
+                position_value=Decimal('0'),
                 unrealized_pnl=Decimal('0'),
                 realized_pnl=Decimal('0'),
-                drawdown=Decimal('0'),
-                peak_value=Decimal('0'),
-                daily_pnl=Decimal('0'),
-                total_exposure=Decimal('0'),
-                leverage=Decimal('0'),
-                position_count=0
+                margin_used=Decimal('0'),
+                free_margin=Decimal('0'),
+                risk_ratio=0.0,
+                exposure=0.0,
+                metadata={}
             )
 
     async def add_position(

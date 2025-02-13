@@ -14,10 +14,11 @@ import aiosqlite
 import json
 from datetime import datetime
 import asyncio
-
+from utils.logger import get_logger
 from utils.numeric_handler import NumericHandler
 from utils.error_handler import handle_error_async, DatabaseError
 from utils.exceptions import DatabaseError
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +82,34 @@ class DatabaseConnection:
 class DatabaseQueries:
     """Safe database query implementations"""
 
-    def __init__(self, db_path: str, logger: Optional[logging.Logger] = None):
-        self.db_path = db_path
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.pool: Optional[asyncio.Pool] = None
+        self.logger = get_logger(__name__)
         self.nh = NumericHandler()
-        self.db_connection = DatabaseConnection(db_path)
+        self.db_connection = DatabaseConnection(config['database']['dbname'])
         self._lock = asyncio.Lock()
         self.query_builder = QueryBuilder()
+
+    async def initialize(self) -> bool:
+        """Initialize database connection pool"""
+        try:
+            self.pool = await asyncio.create_pool(
+                host=self.config['database']['host'],
+                port=self.config['database']['port'],
+                user=self.config['database']['user'],
+                password=self.config['database']['password'],
+                database=self.config['database']['dbname']
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize database pool: {e}")
+            return False
+
+    async def close(self):
+        """Close database connection pool"""
+        if self.pool:
+            await self.pool.close()
 
     async def execute(self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()) -> Any:
         """Execute a SQL query with parameters"""
@@ -205,7 +227,7 @@ class DatabaseQueries:
     async def ping(self) -> bool:
         """Check database connection"""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with aiosqlite.connect(self.config['database']['dbname']) as db:
                 await db.execute("SELECT 1")
                 return True
         except Exception:

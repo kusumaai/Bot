@@ -19,11 +19,14 @@ from risk.limits import RiskLimits
 
 @dataclass
 class PositionAlert:
+    # Required fields (no defaults)
     symbol: str
     alert_type: str
     message: str
     timestamp: float
     severity: str
+    
+    # Optional fields (with defaults)
     position_size: Optional[Decimal] = None
     current_price: Optional[Decimal] = None
     entry_price: Optional[Decimal] = None

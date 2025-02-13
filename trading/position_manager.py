@@ -2,10 +2,28 @@ import asyncio
 import time
 from typing import Any, Dict, Optional
 from decimal import Decimal, InvalidOperation
-from trading.position import Position
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import PositionError, InvalidOrderError, DatabaseError
 from utils.error_handler import handle_error_async
+from signals.market_state import prepare_market_state
+import pandas as pd
+from dataclasses import dataclass, field
+from types.base_types import Position
+from types.base_types import MarketState
+
+@dataclass
+class Position:
+    # Required fields (no defaults)
+    symbol: str
+    side: str
+    entry_price: Decimal
+    size: Decimal
+    timestamp: int
+    
+    # Optional fields (with defaults)
+    stop_loss: Optional[Decimal] = None
+    take_profit: Optional[Decimal] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 class PositionManager:
     def __init__(self, ctx: Any):
@@ -98,4 +116,13 @@ class PositionManager:
         except DatabaseError as e:
             self.logger.error(f"Failed to update position status: {e}")
         except Exception as e:
-            self.logger.error(f"Unexpected error in _update_position: {e}") 
+            self.logger.error(f"Unexpected error in _update_position: {e}")
+
+    async def update_position(self, symbol: str, market_data: pd.DataFrame) -> None:
+        try:
+            market_state = prepare_market_state(market_data)
+            position = self.positions.get(symbol)
+            if position:
+                await position.update_market_state(market_state)
+        except Exception as e:
+            await handle_error_async(e, "PositionManager.update_position", self.logger) 

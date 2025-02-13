@@ -3,8 +3,6 @@
 Module: utils/logger.py
 Production logging configuration with rotation and formatting
 """
-
-import logging
 import logging.handlers
 import sys
 import os
@@ -14,6 +12,7 @@ import json
 from datetime import datetime
 import traceback
 from utils.error_handler import handle_error
+import logging
 
 class CustomFormatter(logging.Formatter):
     """Custom formatter with color support for console output"""
@@ -36,31 +35,24 @@ class CustomFormatter(logging.Formatter):
             
         return super().format(record)
 
-def setup_logging(name: str, level: str = "INFO") -> logging.Logger:
-    """Set up logging with console and file handlers."""
-    logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.propagate = False  # Prevent double logging
-
-    if not logger.handlers:
-        # Create formatter
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+class LoggerSetup:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.setup_logging()
+        return cls._instance
+    
+    def setup_logging(self):
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
-        # Console handler
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
-
-        # File handler
-        log_output = os.getenv("LOG_OUTPUT", "logs/trading_bot.log")
-        os.makedirs(os.path.dirname(log_output), exist_ok=True)
-        fh = logging.FileHandler(log_output)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-
-    return logger
+def get_logger(name: Optional[str] = None) -> logging.Logger:
+    LoggerSetup()  # Ensure logging is configured
+    return logging.getLogger(name)
 
 def log_trade(logger: logging.Logger, trade_data: Dict[str, Any]) -> None:
     """

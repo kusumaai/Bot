@@ -15,7 +15,7 @@ import random
 import time
 import pandas as pd
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Add project root to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,8 +23,10 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from trading.exceptions import InvalidOrderError
+from utils import logger
 from utils.error_handler import handle_error, handle_error_async, ValidationError
-from database.database import DBConnection, execute_sql
+from database.database import DatabaseQueries, execute_sql
 from signals.trading_types import MarketState, TradingRule
 from signals.storage import store_rule, load_best_rule
 from signals.population import (
@@ -39,8 +41,8 @@ from signals.evaluation import (
     TradeMetrics
 )
 from database.queries import DatabaseQueries
-from models.ga_signal import generate_ga_signals, GASignal
-from utils.exceptions import InvalidOrderError
+from signals.base_types import BaseSignal
+from signals.market_state import prepare_market_state
 
 @dataclass
 class GAParameters:
@@ -62,6 +64,21 @@ class GAParameters:
             raise ValidationError("Crossover rate must be between 0 and 1")
         if self.elite_size >= self.population_size:
             raise ValidationError("Elite size must be less than population size")
+
+@dataclass
+class GASignal(BaseSignal):
+    """GA-specific signal extension"""
+    # Required fields (no defaults)
+    symbol: str
+    direction: str
+    strength: Decimal
+    timestamp: datetime
+    rule_id: str
+    
+    # Optional fields (with defaults)
+    confidence: float = 0.0
+    expiry: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 class GASynergySignal:
     def __init__(
@@ -370,7 +387,7 @@ async def run_ga_optimization(ctx: Any) -> None:
         while True:
             try:
                 ctx.logger.info("Fetching dataset...")
-                with DBConnection(ctx.db_pool) as conn:
+                with DatabaseQueries(ctx.db_pool) as conn:
                     rows = execute_sql(
                         conn,
                         sql_query,
@@ -414,7 +431,7 @@ if __name__ == "__main__":
             self.config = {
                 "timeframe": "15m",
                 "ga_interval": 300,
-                "exchanges": ["binance"],
+                "exchanges": ["kucoin"],
                 "ga_settings": {
                     "population_size": 100,
                     "mutation_rate": 0.2,

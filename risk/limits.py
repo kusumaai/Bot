@@ -4,17 +4,18 @@ Module: risk/limits.py
 Core risk limits and validation
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
 import json
-
+from types.base_types import BaseValidationResult
 from utils.error_handler import handle_error
 
 @dataclass
 class RiskLimits:
     """Risk management limits and thresholds"""
     
+    # Required fields (no defaults)
     # Position Limits
     max_position_size: Decimal
     min_position_size: Decimal
@@ -36,7 +37,9 @@ class RiskLimits:
     
     # Volatility Limits
     max_volatility: Decimal
-    min_liquidity: Decimal
+    
+    # Optional fields (with defaults)
+    min_liquidity: Decimal = Decimal('100000')
     
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> 'RiskLimits':

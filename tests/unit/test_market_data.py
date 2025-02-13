@@ -2,10 +2,12 @@ from unittest.mock import AsyncMock
 import pytest
 from decimal import Decimal
 from datetime import datetime, timezone
+import pandas as pd
 
 from execution.market_data import MarketData
 from database.queries import DatabaseQueries
 from utils.error_handler import ExchangeError
+from signals.market_state import prepare_market_state, MarketState
 
 
 @pytest.fixture
@@ -75,4 +77,21 @@ async def test_market_data_validation(market_data_fixture):
     market_data_fixture.data['BTC/USDT'] = {'price': Decimal('-50000'), 'volume': Decimal('10000')}
     is_valid = market_data_fixture.validate_market_data('BTC/USDT')
     assert is_valid is False
-    market_data_fixture.logger.warning.assert_called_with("Invalid price for BTC/USDT: -50000") 
+    market_data_fixture.logger.warning.assert_called_with("Invalid price for BTC/USDT: -50000")
+
+
+def test_market_state_preparation():
+    # Create test data
+    data = pd.DataFrame({
+        'high': [100, 101, 102],
+        'low': [98, 97, 99],
+        'close': [99, 100, 101],
+        'volume': [1000, 1100, 900]
+    })
+    
+    market_state = prepare_market_state(data)
+    
+    assert isinstance(market_state, MarketState)
+    assert market_state.trend in ['bullish', 'bearish']
+    assert isinstance(market_state.volatility, float)
+    assert isinstance(market_state.volume, float) 

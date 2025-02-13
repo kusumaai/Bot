@@ -6,9 +6,10 @@ Market data and risk validation utilities
 
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from datetime import datetime, timedelta
+from signals.market_state import prepare_market_state
 from utils.numeric import NumericHandler
 import numpy as np
 import pandas as pd
@@ -16,17 +17,21 @@ import logging
 import asyncio
 
 from utils.error_handler import handle_error, ValidationError
+from types.base_types import BaseValidationResult, MarketState
 from .limits import RiskLimits
 
 @dataclass
-class MarketDataValidation:
+class MarketDataValidation(BaseValidationResult):
     """Market data validation result"""
-    timestamp: float
+    # Required fields (no defaults)
     symbol: str
     price: Decimal
     volume: Decimal
-    is_valid: bool
-    error_message: Optional[str] = None
+    error_message: str
+    
+    # Optional fields (with defaults)
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 class MarketDataValidationError(Exception):
     """Custom exception for market data validation errors."""
@@ -44,33 +49,24 @@ class MarketDataValidation:
         self._lock = asyncio.Lock()
         self.max_cache_size = 1000  # Prevent unbounded growth
         
-    async def validate_market_data(
-        self, 
-        symbol: str, 
-        data: Dict[str, Any]
-    ) -> bool:
-        """Comprehensive market data validation"""
+    async def validate_market_data(self, data: pd.DataFrame) -> bool:
         try:
-            if not self._check_data_completeness(data):
-                raise MarketDataValidationError("Incomplete market data.")
+            market_state = prepare_market_state(data)
             
-            if not await self._check_volatility(symbol, self.nh.to_decimal(data["current_price"])):
-                raise MarketDataValidationError("Volatility check failed.")
-            
-            # Additional validations can be added here
-            
-            # Update validation cache
-            self.validation_cache[symbol] = {
-                'last_valid_price': self.nh.to_decimal(data["current_price"])
-            }
-            
+            # Validate volatility is within acceptable range
+            if market_state.volatility > self.limits.max_volatility:
+                self.logger.warning(f"Volatility {market_state.volatility} exceeds limit")
+                return False
+                
+            # Validate volume is sufficient
+            if market_state.volume < self.limits.min_volume_ratio:
+                self.logger.warning(f"Volume ratio {market_state.volume} below minimum")
+                return False
+                
             return True
-
-        except MarketDataValidationError as e:
-            self.logger.error(f"Market data validation failed: {e}")
-            return False
+            
         except Exception as e:
-            self.logger.error(f"Unexpected error in validate_market_data: {e}")
+            self.logger.error(f"Market data validation failed: {e}")
             return False
 
     def _check_data_completeness(self, data: Dict[str, Any]) -> bool:
@@ -236,7 +232,6 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
                 symbol=data.get("symbol", ""),
                 price=Decimal(0),
                 volume=Decimal(0),
-                is_valid=False,
                 error_message="Stale data"
             )
 
@@ -249,7 +244,6 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
                 symbol=data.get("symbol", ""),
                 price=Decimal(0),
                 volume=Decimal(0),
-                is_valid=False,
                 error_message=f"Missing required fields: {', '.join(missing_fields)}"
             )
 
@@ -263,7 +257,6 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
                     symbol=data["symbol"],
                     price=Decimal(0),
                     volume=Decimal(0),
-                    is_valid=False,
                     error_message="Invalid price or volume"
                 )
         except (ValueError, TypeError):
@@ -272,7 +265,6 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
                 symbol=data.get("symbol", ""),
                 price=Decimal(0),
                 volume=Decimal(0),
-                is_valid=False,
                 error_message="Invalid numeric values"
             )
 
@@ -281,7 +273,7 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
             symbol=data["symbol"],
             price=Decimal(str(data["price"])),
             volume=Decimal(str(data["volume"])),
-            is_valid=True
+            error_message=""
         )
 
     except Exception as e:
@@ -291,7 +283,6 @@ def validate_market_data(data: Dict[str, Any]) -> MarketDataValidation:
             symbol=data.get("symbol", ""),
             price=Decimal(0),
             volume=Decimal(0),
-            is_valid=False,
             error_message=str(e)
         )
 
