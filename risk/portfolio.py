@@ -15,7 +15,7 @@ import logging
 from collections import deque
 
 from utils.error_handler import handle_error
-from .position import Position
+from trading.position import Position
 from .limits import RiskLimits
 from utils.numeric import NumericHandler
 from trading.exceptions import PortfolioError

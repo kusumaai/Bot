@@ -8,8 +8,8 @@ from utils.error_handler import handle_error_async
 from signals.market_state import prepare_market_state
 import pandas as pd
 from dataclasses import dataclass, field
-from types.base_types import Position
-from types.base_types import MarketState
+from bot_types.base_types import Position
+from bot_types.base_types import MarketState
 
 @dataclass
 class Position:

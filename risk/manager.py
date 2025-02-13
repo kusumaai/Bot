@@ -10,9 +10,10 @@ from dataclasses import dataclass
 import time
 import logging
 import asyncio
+from datetime import datetime
 
 from utils.error_handler import handle_error, handle_error_async
-from .position import Position
+from trading.position import Position
 from .limits import RiskLimits
 from .portfolio import PortfolioManager
 from .validation import MarketDataValidation
@@ -22,18 +23,45 @@ from utils.numeric import NumericHandler
 class RiskManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.logger = ctx.logger
+        self.logger = ctx.logger or logging.getLogger(__name__)
         self._lock = asyncio.Lock()
-        self.position_limits = self._load_position_limits()
-        self.risk_limits = {
-            'max_position_size': Decimal(str(ctx.config.get('max_position_pct', '10'))) / Decimal('100'),
-            'max_drawdown': Decimal(str(ctx.config.get('max_drawdown', '10'))) / Decimal('100'),
-            'max_daily_loss': Decimal(str(ctx.config.get('max_daily_loss', '3'))) / Decimal('100'),
-            'max_positions': ctx.config.get('max_positions', 10)
-        }
-        self.portfolio = PortfolioManager(self.risk_limits)
+        self.initialized = False
         self.nh = NumericHandler()
         
+        # These will be initialized during initialize()
+        self.risk_limits = None
+        self.position_limits = None
+        self._last_risk_check = time.time()
+        self._daily_loss_start = datetime.now().date()
+        self._daily_loss = Decimal('0')
+
+    async def check_risk_limits(self, portfolio_value: Decimal) -> bool:
+        """Check if any risk limits are breached"""
+        try:
+            async with self._lock:
+                # Reset daily loss counter if new day
+                current_date = datetime.now().date()
+                if current_date > self._daily_loss_start:
+                    self._daily_loss_start = current_date
+                    self._daily_loss = Decimal('0')
+
+                # Calculate current drawdown
+                drawdown = await self._calculate_drawdown(portfolio_value)
+                if drawdown >= self.risk_limits.emergency_stop_pct:
+                    self.logger.error(f"Emergency stop limit breached: {drawdown}")
+                    return False
+
+                # Check daily loss
+                if self._daily_loss >= self.risk_limits.max_daily_loss:
+                    self.logger.error(f"Daily loss limit breached: {self._daily_loss}")
+                    return False
+
+                return True
+
+        except Exception as e:
+            await handle_error_async(e, "RiskManager.check_risk_limits", self.logger)
+            return False
+
     def validate_position(
         self, 
         symbol: str, 
@@ -309,9 +337,18 @@ class RiskManager:
     async def get_account_size(self) -> Decimal:
         return await self.portfolio.get_total_value()
 
-    async def initialize(self):
-        # Initialize risk manager components
-        await self.portfolio.initialize()
+    async def initialize(self) -> bool:
+        """Initialize risk manager"""
+        try:
+            if self.initialized:
+                return True
+            self.risk_limits = self.ctx.config.get("risk_limits", {})
+            self.position_limits = self.ctx.config.get("position_limits", {})
+            self.initialized = True
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize risk manager: {e}")
+            return False
 
     def _load_position_limits(self) -> Dict[str, Any]:
         # Implementation to load position limits from configuration

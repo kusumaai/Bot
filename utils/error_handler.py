@@ -1,43 +1,228 @@
 #!/usr/bin/env python3
 """
 Module: utils/error_handler.py
-Centralized error handling utility
+Centralized error handling utility with database persistence and error aggregation
 """
 
 import logging
 import traceback
-from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
-from datetime import datetime
+from typing import Optional, Dict, Any, Type, List, Union
+from datetime import datetime, timedelta
 import json
 import asyncio
 from pathlib import Path
 import time
 from collections import defaultdict
+import sqlite3
+from contextlib import asynccontextmanager
+
 from utils.exceptions import (
-    RatchetError,
-    RateLimitExceeded,
-    PositionError,
-    InvalidOrderError,
-    ExchangeError,
-    ExchangeAPIError,
-    PortfolioError,
-    MathError,
-    CircuitBreakerError,
-    MarketDataValidationError,
-    TradingBotError
+    RatchetError, RateLimitExceeded, PositionError,
+    InvalidOrderError, ExchangeError, ExchangeAPIError,
+    PortfolioError, MathError, CircuitBreakerError,
+    MarketDataValidationError, TradingBotError,
+    DatabaseError
 )
 
-if TYPE_CHECKING:
-    from database.database import DBConnection
-
-
-# Global connection pool
+# Global state
 _db_pool: Optional[str] = None
+_error_counts: Dict[str, int] = defaultdict(int)
+_last_errors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+_error_thresholds: Dict[str, int] = {
+    "RateLimitExceeded": 5,
+    "ExchangeAPIError": 3,
+    "MarketDataValidationError": 10,
+    "PositionError": 5
+}
+MAX_ERROR_HISTORY = 100
+ERROR_EXPIRY = timedelta(hours=1)
+
+@asynccontextmanager
+async def db_connection():
+    """Async context manager for database connections"""
+    if not _db_pool:
+        raise DatabaseError("Database not initialized")
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(_db_pool)
+        yield conn
+    finally:
+        if conn:
+            conn.close()
 
 def init_error_handler(db_path: str) -> None:
-    """Initialize error handler with database connection"""
+    """Initialize error handler with database connection and tables"""
     global _db_pool
-    _db_pool = db_path
+    
+    try:
+        # Ensure directory exists
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        _db_pool = db_path
+        
+        # Initialize database tables
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS error_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    traceback TEXT,
+                    metadata TEXT,
+                    severity INTEGER DEFAULT 1
+                )
+            """)
+            
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS error_aggregates (
+                    error_type TEXT PRIMARY KEY,
+                    count INTEGER DEFAULT 0,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    severity_sum INTEGER DEFAULT 0
+                )
+            """)
+            conn.commit()
+            
+    except Exception as e:
+        logging.error(f"Failed to initialize error handler: {str(e)}")
+        raise
+
+async def handle_error_async(
+    e: Exception,
+    location: str,
+    logger: Optional[logging.Logger] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    severity: int = 1
+) -> None:
+    """Handle async errors with proper logging, aggregation and persistence"""
+    try:
+        error_type = e.__class__.__name__
+        error_msg = f"Async error in {location}: {str(e)}"
+        
+        # Log error
+        if logger:
+            logger.error(error_msg, exc_info=True)
+        else:
+            logging.error(error_msg, exc_info=True)
+            
+        # Update error counts and history
+        _error_counts[error_type] += 1
+        
+        error_data = {
+            "timestamp": datetime.now().isoformat(),
+            "type": error_type,
+            "location": location,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+            "metadata": json.dumps(metadata) if metadata else None,
+            "severity": severity
+        }
+        
+        _last_errors[error_type].append(error_data)
+        if len(_last_errors[error_type]) > MAX_ERROR_HISTORY:
+            _last_errors[error_type].pop(0)
+            
+        # Store in database
+        if _db_pool:
+            async with db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Insert error log
+                cursor.execute("""
+                    INSERT INTO error_log (
+                        timestamp, error_type, location, message,
+                        traceback, metadata, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    error_data["timestamp"],
+                    error_type,
+                    location,
+                    str(e),
+                    error_data["traceback"],
+                    error_data["metadata"],
+                    severity
+                ))
+                
+                # Update aggregates
+                cursor.execute("""
+                    INSERT INTO error_aggregates (
+                        error_type, count, first_seen, last_seen, severity_sum
+                    ) VALUES (?, 1, ?, ?, ?)
+                    ON CONFLICT(error_type) DO UPDATE SET
+                        count = count + 1,
+                        last_seen = ?,
+                        severity_sum = severity_sum + ?
+                """, (
+                    error_type,
+                    error_data["timestamp"],
+                    error_data["timestamp"],
+                    severity,
+                    error_data["timestamp"],
+                    severity
+                ))
+                
+                conn.commit()
+        
+        # Check error thresholds
+        if _error_counts[error_type] >= _error_thresholds.get(error_type, float('inf')):
+            await handle_error_threshold_exceeded(error_type, location, logger)
+            
+    except Exception as handler_error:
+        if logger:
+            logger.error(f"Error handler failed: {str(handler_error)}", exc_info=True)
+        else:
+            logging.error(f"Error handler failed: {str(handler_error)}", exc_info=True)
+
+async def handle_error_threshold_exceeded(
+    error_type: str,
+    location: str,
+    logger: Optional[logging.Logger] = None
+) -> None:
+    """Handle cases where error thresholds are exceeded"""
+    msg = f"Error threshold exceeded for {error_type} in {location}"
+    if logger:
+        logger.critical(msg)
+    else:
+        logging.critical(msg)
+    
+    # Implement circuit breaker or emergency shutdown logic here
+    # This could raise a fatal error or trigger system shutdown
+
+async def get_error_stats(
+    error_type: Optional[str] = None,
+    time_window: Optional[timedelta] = None
+) -> Dict[str, Any]:
+    """Get error statistics for analysis"""
+    try:
+        if not _db_pool:
+            return {}
+            
+        async with db_connection() as conn:
+            cursor = conn.cursor()
+            
+            if error_type:
+                # Get stats for specific error type
+                cursor.execute("""
+                    SELECT * FROM error_aggregates WHERE error_type = ?
+                """, (error_type,))
+            else:
+                # Get all error stats
+                cursor.execute("SELECT * FROM error_aggregates")
+                
+            return {row[0]: {
+                "count": row[1],
+                "first_seen": row[2],
+                "last_seen": row[3],
+                "avg_severity": row[4] / row[1] if row[1] > 0 else 0
+            } for row in cursor.fetchall()}
+            
+    except Exception as e:
+        logging.error(f"Failed to get error stats: {str(e)}")
+        return {}
 
 class ApplicationError(Exception):
     """Base exception class for application-specific errors"""
@@ -94,12 +279,6 @@ class ErrorHandler:
             exc_info=True,
             extra=metadata or {}
         )
-
-async def handle_error_async(e: Exception, context: str, logger: Optional[logging.Logger] = None):
-    """Asynchronously handle errors by logging and performing necessary actions."""
-    logger = logger or logging.getLogger(__name__)
-    logger.error(f"Error in {context}: {e}")
-    # Implement additional asynchronous error handling actions if necessary
 
 def handle_error(e: Exception, context: str, logger: Optional[logging.Logger] = None):
     """Handle errors synchronously by logging."""

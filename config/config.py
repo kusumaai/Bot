@@ -8,7 +8,7 @@ def load_config() -> Dict[str, Any]:
     try:
         # Get the project root directory
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(current_dir, "config", "config.json")
+        config_path = os.path.join(current_dir, "config.json")
         
         # Check if config file exists
         if not os.path.exists(config_path):

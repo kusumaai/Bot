@@ -1,4 +1,4 @@
-from decimal import InvalidOperation
+from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Any, Optional, Union, Tuple
 import logging
 from datetime import datetime
@@ -67,9 +67,29 @@ class DatabaseQueries:
         self.nh = NumericHandler()
         self.db_connection = DBConnection(db_path)
         self._lock = asyncio.Lock()
-        self.db_pool = None
         self.query_builder = QueryBuilder()
     
+    async def initialize(self) -> bool:
+        """Initialize database connection"""
+        try:
+            # Initialize the underlying connection first
+            if not await self.db_connection.initialize():
+                return False
+                
+            # Test the connection
+            async with self._lock:
+                query = "SELECT 1"
+                await self.db_connection.execute_sql(query)
+                self.logger.info("Database connection initialized successfully")
+                return True
+                
+        except DatabaseError as e:
+            self.logger.error(f"Failed to initialize database connection: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error during database initialization: {e}")
+            return False
+
     async def execute(self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()) -> Any:
         """Execute a SQL query with parameters"""
         try:
@@ -339,5 +359,31 @@ class DatabaseQueries:
         if not success:
             raise DatabaseError("Failed to insert trade into database.")
         return True
+
+    async def get_account_balance(self) -> Decimal:
+        """Get current account balance from database"""
+        try:
+            async with self.db_connection.get_connection() as conn:
+                query = "SELECT balance FROM account_balance ORDER BY timestamp DESC LIMIT 1"
+                result = await conn.execute(query)
+                row = await result.fetchone()
+                if row:
+                    return Decimal(str(row['balance']))
+                return Decimal('0')
+        except Exception as e:
+            self.logger.error(f"Failed to get account balance: {e}")
+            return Decimal('0')
+
+    async def get_positions(self) -> List[Dict[str, Any]]:
+        """Get all open positions from database"""
+        try:
+            async with self.db_connection.get_connection() as conn:
+                query = "SELECT * FROM positions WHERE status = 'open'"
+                result = await conn.execute(query)
+                rows = await result.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Failed to get positions: {e}")
+            return []
 
     # Add other database query methods as needed 

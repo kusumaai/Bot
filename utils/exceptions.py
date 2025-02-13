@@ -18,7 +18,9 @@ class PositionError(Exception):
 class PositionUpdateError(Exception):
     """Exception related to position management."""
     pass
-
+class MarketDataValidationError(Exception):
+    """Custom exception for market data validation errors."""
+    pass
 class InvalidOrderError(TradingBotError):
     """Exception raised for invalid order operations."""
     pass
@@ -50,7 +52,9 @@ class MarketDataValidationError(TradingBotError):
 class DatabaseError(TradingBotError):
     """Exception raised for database-related errors."""
     pass
-
+class BackTestError(Exception):
+    """Exception raised for backtest-related errors."""
+    pass
 class ValidationError(Exception):
     """Exception raised for validation-related errors."""
     pass

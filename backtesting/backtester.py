@@ -19,6 +19,7 @@ import asyncio
 from database.database import DBConnection, execute_sql
 from signals.ga_synergy import generate_ga_signals
 from utils.error_handler import handle_error, handle_error_async
+from utils.exceptions import BackTestError
 from trading.math import (
     calculate_expected_value,
     calculate_kelly_fraction,
@@ -75,15 +76,42 @@ class BacktestConfig:
 class Backtester:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.logger = logging.getLogger(__name__)
+        self.logger = ctx.logger or logging.getLogger(__name__)
+        self.initialized = False
         self.config = ctx.config
-        self.portfolio = ctx.portfolio_manager
-        self.ratchet_manager = ctx.ratchet_manager
         self.nh = NumericHandler()
-        self.current_balance = Decimal(str(self.config.get("initial_balance", "10000")))
+        
+        # These will be set during initialization
+        self.portfolio = None
+        self.ratchet_manager = None
+        self.current_balance = None
         self.trades = []
 
-    def _execute_trade(
+    async def initialize(self) -> bool:
+        try:
+            if self.initialized:
+                return True
+                
+            if not self.ctx.portfolio_manager or not self.ctx.portfolio_manager.initialized:
+                self.logger.error("Portfolio manager must be initialized first")
+                return False
+                
+            if not self.ctx.ratchet_manager or not self.ctx.ratchet_manager.initialized:
+                self.logger.error("Ratchet manager must be initialized first")
+                return False
+                
+            self.portfolio = self.ctx.portfolio_manager
+            self.ratchet_manager = self.ctx.ratchet_manager
+            self.current_balance = Decimal(str(self.config.get("initial_balance", "10000")))
+            
+            self.initialized = True
+            return True
+            
+        except Exception as e:
+            await handle_error_async(e, "Backtester.initialize", self.logger)
+            return False
+
+    async def _execute_trade(
         self,
         signal: Dict[str, Any],
         position_size: Decimal,
@@ -92,53 +120,41 @@ class Backtester:
         market_state: Any
     ) -> Optional[Dict[str, Any]]:
         """Execute trade with comprehensive risk management"""
-        
-        entry_price = self.nh.to_decimal(entry_candle["close"])
-        entry_cost = position_size * entry_price * self.config["commission"]
-        
-        # Calculate max position size based on current balance
-        max_position = self.current_balance * self.config["position_size_limit"]
-        position_size = min(position_size, max_position / entry_price)
-        
-        if position_size < Decimal(str(self.config["min_trade_size"])):
-            self.logger.info("Trade size below minimum threshold. Skipping trade.")
+        try:
+            if not self.initialized:
+                await self.initialize()
+                if not self.initialized:
+                    raise BackTestError("Backtester not initialized")
+            
+            entry_price = self.nh.to_decimal(entry_candle["close"])
+            entry_cost = position_size * entry_price * self.config.get("commission", Decimal("0.001"))
+            
+            # Calculate max position size based on current balance
+            max_position = self.current_balance * self.portfolio.risk_limits.max_position_size
+            position_size = min(position_size, max_position / entry_price)
+            
+            if position_size < self.portfolio.risk_limits.min_position_size:
+                self.logger.info("Trade size below minimum threshold. Skipping trade.")
+                return None
+            
+            # Set stops using risk limits
+            stop_loss = entry_price * (Decimal('1') - self.portfolio.risk_limits.risk_factor)
+            take_profit = entry_price * (Decimal('1') + self.portfolio.risk_limits.risk_factor * Decimal('2'))
+            
+            trade_id = str(uuid.uuid4())
+            await self.ratchet_manager.initialize_trade(trade_id, float(entry_price), float(take_profit), float(stop_loss))
+            
+            return {
+                "trade_id": trade_id,
+                "entry_price": entry_price,
+                "position_size": position_size,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit
+            }
+            
+        except Exception as e:
+            await handle_error_async(e, "Backtester._execute_trade", self.logger)
             return None
-        
-        # Set stops using config values
-        stop_loss = entry_price * (Decimal('1') - Decimal(str(self.config["stop_loss_pct"])))
-        take_profit = entry_price * (Decimal('1') + Decimal(str(self.config["take_profit_pct"])))
-        
-        trade_id = str(uuid.uuid4())
-        self.ratchet_manager.initialize_trade(trade_id, float(entry_price))
-        
-        trade = {
-            "id": trade_id,
-            "symbol": signal["symbol"],
-            "direction": signal["direction"],
-            "entry_price": entry_price,
-            "position_size": position_size,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "entry_time": datetime.utcnow(),
-            "status": "open"
-        }
-        
-        # Add trade to portfolio
-        added = asyncio.run(self.portfolio.add_position(
-            symbol=signal["symbol"],
-            size=position_size,
-            entry_price=entry_price
-        ))
-        
-        if not added:
-            self.logger.warning(f"Failed to add position for {signal['symbol']}. Trade aborted.")
-            return None
-        
-        self.logger.info(f"Trade executed: {trade}")
-        self.current_balance -= entry_cost
-        self.trades.append(trade)
-        
-        return trade
 
     async def run_backtest(self, historical_data: pd.DataFrame) -> None:
         """Run the backtesting simulation"""
@@ -153,7 +169,7 @@ class Backtester:
             position_size = await self.risk_manager.calculate_position_size(signal)
             
             # Execute trade
-            trade = self._execute_trade(
+            trade = await self._execute_trade(
                 signal=signal,
                 position_size=position_size,
                 entry_candle=candle,
@@ -163,7 +179,7 @@ class Backtester:
             
             # Optionally, implement trade tracking and exit conditions
             if trade:
-                self.logger.info(f"Trade placed: {trade['id']} for {trade['symbol']}")
+                self.logger.info(f"Trade placed: {trade['trade_id']} for {trade['entry_price']}")
                 
                 # Implement trade exit logic based on future data
                 # ...

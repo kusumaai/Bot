@@ -273,3 +273,17 @@ class ExchangeManager:
         except Exception as e:
             self.logger.error(f"Unexpected error in get_order_status: {e}")
             return None
+
+    async def initialize(self) -> bool:
+        """Initialize exchange manager"""
+        try:
+            if self.initialized:
+                return True
+            await self.exchange.load_markets()
+            self._markets = await self.exchange.fetch_markets()
+            self._last_market_update = datetime.utcnow()
+            self.initialized = True
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange manager: {e}")
+            return False

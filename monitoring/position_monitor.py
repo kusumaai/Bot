@@ -14,7 +14,7 @@ from collections import deque
 
 from utils.error_handler import handle_error, handle_error_async
 from risk.manager import RiskManager
-from risk.position import Position
+from trading.position import Position
 from risk.limits import RiskLimits
 
 @dataclass

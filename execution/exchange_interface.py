@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import uuid
 import logging
 
+from trading.exceptions import DatabaseError
 from utils.error_handler import handle_error, handle_error_async, ExchangeError, ValidationError
 from database.database import DatabaseQueries, execute_sql
 from utils.numeric_handler import NumericHandler
@@ -64,17 +65,20 @@ class ExchangeInterface:
         self.exchange = self.exchange_manager.exchange
         
         # Initialize dependent components after exchange setup
-        self.risk = RiskManager(ctx)
-        self.validator = MarketDataValidation(self.risk.risk_limits, self.logger)
+        self.validator = MarketDataValidation(ctx.risk_manager.risk_limits, self.logger)
         self.db = DatabaseQueries(ctx.config.get("database", {}).get("path", "data/trading.db"), logger=self.logger)
 
     async def initialize(self) -> bool:
-        """Initialize exchange connection"""
+        """Initialize exchange interface"""
         try:
-            await self.exchange_manager.get_markets()
+            if not await self.exchange_manager.initialize():
+                return False
+            if not await self.risk_manager.initialize():
+                return False
+            self.initialized = True
             return True
-        except ExchangeError as e:
-            self.logger.error(f"Failed to initialize exchange: {e}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange interface: {e}")
             return False
 
     async def close(self) -> None:
@@ -240,4 +244,21 @@ class ExchangeInterface:
             return True
         except Exception as e:
             await handle_error_async(e, "ExchangeInterface.close_position", self.logger)
+            return False
+
+    async def initialize(self) -> bool:
+        """Initialize database connection"""
+        try:
+            # Test database connection
+            async with self._lock:
+                query = "SELECT 1"
+                await self.execute(query)
+                self.logger.info("Database connection initialized successfully")
+                return True
+            
+        except DatabaseError as e:
+            self.logger.error(f"Failed to initialize database connection: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error during database initialization: {e}")
             return False

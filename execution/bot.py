@@ -32,8 +32,11 @@ from execution.main_loop import main_loop
 class TradingContext:
     """Trading context maintaining all component instances and state"""
     def __init__(self):
-        self.config = load_config()
+        # Initialize logging first
         self.logger = setup_logging(name="TradingBot", level="INFO")
+        self.config = load_config()
+        
+        # Core components
         self.running = True
         self.exchange_interface = None
         self.market_data = None
@@ -43,59 +46,99 @@ class TradingContext:
         self.health_monitor = None
         self.ratchet_manager = None
         self.market_validator = None
+         
+        # State tracking
         self.last_health_check = 0
         self.last_metrics_update = 0
         self.db_queries = None
 
 async def initialize_components(ctx: TradingContext) -> bool:
-    """Initialize all trading components in dependency order"""
+    """Initialize all trading bot components in correct order"""
     try:
-        # Initialize database queries first
-        ctx.db_queries = DatabaseQueries(ctx.config)
+        # Initialize database first with proper connection
+        ctx.db_queries = DatabaseQueries(
+            db_path=ctx.config.get("database", {}).get("path", "trading.db"),
+            logger=ctx.logger
+        )
         
-        # Initialize risk manager before portfolio manager
+        # Initialize database connection
+        if not await ctx.db_queries.initialize():
+            ctx.logger.error("Database initialization failed")
+            return False
+            
+        # Initialize portfolio manager first as other components depend on its risk limits
+        try:
+            ctx.portfolio_manager = PortfolioManager(ctx)
+            if not await ctx.portfolio_manager.initialize():
+                ctx.logger.error("Portfolio manager initialization failed")
+                return False
+        except ValueError as e:
+            ctx.logger.error(f"Portfolio initialization failed: {str(e)}")
+            return False
+            
+        # Initialize risk manager next
         ctx.risk_manager = RiskManager(ctx)
-        await ctx.risk_manager.initialize()
-        
+        if not await ctx.risk_manager.initialize():
+            ctx.logger.error("Risk manager initialization failed")
+            return False
+            
         # Initialize exchange interface
         ctx.exchange_interface = ExchangeInterface(ctx)
         if not await ctx.exchange_interface.initialize():
-            ctx.logger.error("Failed to initialize exchange interface")
+            ctx.logger.error("Exchange interface initialization failed")
+            return False
+            
+        # Initialize market data with validated risk limits
+        ctx.market_data = MarketData(ctx)
+        if not await ctx.market_data.initialize():
+            ctx.logger.error("Market data initialization failed")
             return False
         
-        # Initialize market data
-        ctx.market_data = MarketData(ctx)
-        await ctx.market_data.initialize()
-        
-        # Initialize portfolio manager after risk manager
-        ctx.portfolio_manager = PortfolioManager(ctx.risk_manager.risk_limits, logger=ctx.logger)
-        await ctx.portfolio_manager.initialize()
-        
-        # Initialize circuit breaker
-        ctx.circuit_breaker = CircuitBreaker(ctx.db_queries, ctx.logger)
-        await ctx.circuit_breaker.initialize()
-        
-        # Initialize ratchet manager
-        ctx.ratchet_manager = RatchetManager(ctx)
-        await ctx.ratchet_manager.initialize()
-        
-        # Initialize health monitor
+        # Initialize monitoring components
+        ctx.circuit_breaker = CircuitBreaker(ctx)
+        if not await ctx.circuit_breaker.initialize():
+            ctx.logger.error("Circuit breaker initialization failed")
+            return False
+            
         ctx.health_monitor = HealthMonitor(ctx)
-        asyncio.create_task(ctx.health_monitor.start_monitoring())
+        ctx.ratchet_manager = RatchetManager(ctx)
+        if not await ctx.ratchet_manager.initialize():
+            ctx.logger.error("Ratchet manager initialization failed")
+            return False
+            
+        ctx.market_validator = MarketDataValidation(ctx.risk_manager.risk_limits, ctx.logger)
         
+        ctx.logger.info("All components initialized successfully")
         return True
+        
     except Exception as e:
-        await handle_error_async(e, "initialize_components", logger=ctx.logger)
+        if ctx and ctx.logger:
+            ctx.logger.error(f"Component initialization failed: {str(e)}")
+        else:
+            print(f"Critical initialization error: {str(e)}")
         return False
 
 async def main():
+    """Main entry point for trading bot"""
     ctx = TradingContext()
-    init_success = await initialize_components(ctx)
-    if not init_success:
-        ctx.logger.error("Initialization failed. Exiting.")
-        return
     
-    await main_loop(ctx)
+    try:
+        init_success = await initialize_components(ctx)
+        if not init_success:
+            ctx.logger.error("Failed to initialize components")
+            return
+            
+        ctx.logger.info("Starting main trading loop")
+        await main_loop(ctx)
+        
+    except Exception as e:
+        if ctx and ctx.logger:
+            await handle_error_async(e, "main", logger=ctx.logger)
+        else:
+            print(f"Critical error in main: {str(e)}")
+    finally:
+        ctx.running = False
 
 if __name__ == "__main__":
+    print("execution module loaded.")
     asyncio.run(main())

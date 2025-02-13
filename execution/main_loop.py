@@ -4,7 +4,7 @@ import logging
 
 from utils.error_handler import handle_error_async
 from utils.exceptions import InvalidOrderError
-from signal_utils import analyze_signal
+from signals.signal_utils import analyze_signal
 
 async def main_loop(ctx: Any):
     logger = ctx.logger

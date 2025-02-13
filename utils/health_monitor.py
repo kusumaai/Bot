@@ -86,6 +86,18 @@ class HealthMonitor:
         self.error_window = timedelta(minutes=5)
         self.degradation_threshold = Decimal("2.0")
 
+    async def initialize(self) -> bool:
+        """Initialize health monitor"""
+        try:
+            if self.initialized:
+                return True
+            self._monitor_task = asyncio.create_task(self.monitor_loop())
+            self.initialized = True
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize health monitor: {e}")
+            return False
+
     async def start_monitoring(self):
         """Start the health monitoring loop with proper error handling"""
         while True:

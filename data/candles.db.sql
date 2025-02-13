@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS "candles" (
 	"volume"	REAL,
 	"datetime"	TEXT,
 	"atr_14"	REAL,
-	"exchange"	TEXT
+	"exchange"	TEXT,
+	PRIMARY KEY("symbol","timeframe","timestamp")
 );
 CREATE TABLE IF NOT EXISTS "ga_rules" (
 	"id"	TEXT,
@@ -65,5 +66,20 @@ CREATE TABLE IF NOT EXISTS "trades" (
 	"exchange"	TEXT,
 	"position_size"	REAL,
 	PRIMARY KEY("id")
+);
+CREATE INDEX IF NOT EXISTS "idx_candles_symbol" ON "candles" (
+	"symbol"
+);
+CREATE INDEX IF NOT EXISTS "idx_candles_timeframe" ON "candles" (
+	"timeframe"
+);
+CREATE INDEX IF NOT EXISTS "idx_candles_timestamp" ON "candles" (
+	"timestamp"
+);
+CREATE INDEX IF NOT EXISTS "idx_trades_entry_time" ON "trades" (
+	"entry_time"
+);
+CREATE INDEX IF NOT EXISTS "idx_trades_symbol" ON "trades" (
+	"symbol"
 );
 COMMIT;

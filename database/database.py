@@ -6,6 +6,7 @@ Provides a production-ready context manager for SQLite connections and
 helper functions to execute SQL queries with automatic commits.
 """
 
+import sqlite3
 import logging
 from typing import Any, List, Dict, Optional, Union, Tuple
 from contextlib import asynccontextmanager
@@ -14,13 +15,11 @@ import aiosqlite
 import json
 from datetime import datetime
 import asyncio
-from utils.logger import get_logger
 from utils.numeric_handler import NumericHandler
 from utils.error_handler import handle_error_async, DatabaseError
 from utils.exceptions import DatabaseError
-import asyncio
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('TradingBot')
 
 class QueryBuilder:
     """Placeholder for QueryBuilder class to safely build SQL queries"""
@@ -85,7 +84,7 @@ class DatabaseQueries:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.pool: Optional[asyncio.Pool] = None
-        self.logger = get_logger(__name__)
+        self.logger = logger
         self.nh = NumericHandler()
         self.db_connection = DatabaseConnection(config['database']['dbname'])
         self._lock = asyncio.Lock()

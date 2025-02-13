@@ -16,7 +16,7 @@ from collections import deque
 
 from utils.error_handler import handle_error_async
 from trading.position import Position
-from risk.limits import RiskLimits
+from risk.limits import RiskLimits, load_risk_limits_from_config
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import PortfolioError
 
@@ -34,45 +34,68 @@ class PortfolioStats:
     position_count: int
 
 class PortfolioManager:
-    def __init__(self, risk_limits: RiskLimits, logger: Optional[logging.Logger] = None):
-        self.risk_limits = risk_limits
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, ctx: Any):
+        self.ctx = ctx
+        self.logger = ctx.logger or logging.getLogger(__name__)
         self.positions: Dict[str, Position] = {}
+        self.balance = Decimal(str(ctx.config.get("initial_balance", "10000")))
+        self.initialized = False
+
+        # Get risk limits from config with defaults
+        risk_config = ctx.config.get("risk_limits", {})
+        self.risk_limits = RiskLimits(
+            min_position_size=Decimal(str(risk_config.get("min_position_size", "0.01"))),
+            max_position_size=Decimal(str(risk_config.get("max_position_size", "0.5"))),
+            max_positions=int(risk_config.get("max_positions", 10)),
+            max_leverage=Decimal(str(risk_config.get("max_leverage", "3"))),
+            max_drawdown=Decimal(str(risk_config.get("max_drawdown", "0.2"))),
+            max_daily_loss=Decimal(str(risk_config.get("max_daily_loss", "0.03"))),
+            emergency_stop_pct=Decimal(str(risk_config.get("emergency_stop_pct", "0.15"))),
+            risk_factor=Decimal(str(risk_config.get("risk_factor", "0.02"))),
+            kelly_scaling=Decimal(str(risk_config.get("kelly_scaling", "0.5"))),
+            max_correlation=Decimal(str(risk_config.get("max_correlation", "0.7"))),
+            max_sector_exposure=Decimal(str(risk_config.get("max_sector_exposure", "0.3"))),
+            max_volatility=Decimal(str(risk_config.get("max_volatility", "0.4")))
+        )
+
+        # Validate risk limits immediately
+        validation_result = self.risk_limits.validate()
+        if not validation_result.is_valid:
+            raise ValueError(validation_result.error_message)
+
         self.stats: Optional[PortfolioStats] = None
         self.nh = NumericHandler()
 
-    async def initialize(self):
-        """Initialize portfolio by loading existing positions from the database"""
+    async def initialize(self) -> bool:
+        """Initialize portfolio manager"""
         try:
-            # Example: Load positions from the database
-            trades = await self._load_trades_from_db()
-            for trade in trades:
-                position = Position(
-                    symbol=trade["symbol"],
-                    side=trade["side"],
-                    entry_price=Decimal(str(trade["entry_price"])),
-                    size=Decimal(str(trade["size"])),
-                    timestamp=trade["timestamp"],
-                    current_price=Decimal(str(trade.get("current_price", trade["entry_price"]))),
-                    unrealized_pnl=Decimal('0'),
-                    realized_pnl=Decimal('0')
-                )
-                self.positions[trade["id"]] = position
-            self.logger.info(f"Loaded {len(self.positions)} positions from the database.")
-            await self.update_stats()
+            if self.initialized:
+                return True
+            self.risk_limits = load_risk_limits_from_config(self.ctx.config)
+            self.initialized = True
+            return True
         except Exception as e:
-            await handle_error_async(e, "PortfolioManager.initialize", self.logger)
-            raise PortfolioError(f"Failed to initialize portfolio: {e}") from e
+            self.logger.error(f"Failed to initialize portfolio manager: {e}")
+            return False
 
-    async def _load_trades_from_db(self) -> List[Dict[str, Any]]:
-        """Load trades from the database"""
-        # Implementation depends on your database schema
-        trades = []
+    async def update_position(self, symbol: str, position: Position) -> bool:
+        """Update position in portfolio"""
         try:
-            trades = await self.ctx.db_queries.get_all_trades()
+            self.positions[symbol] = position
+            await self.update_stats()
+            self.logger.info(f"Updated position: {position}")
+            return True
         except Exception as e:
-            await handle_error_async(e, "_load_trades_from_db", self.logger)
-        return trades
+            await handle_error_async(e, "PortfolioManager.update_position", self.logger)
+            return False
+
+    async def get_position(self, symbol: str) -> Optional[Position]:
+        """Get position for symbol"""
+        return self.positions.get(symbol)
+
+    async def get_all_positions(self) -> List[Position]:
+        """Get all open positions"""
+        return list(self.positions.values())
 
     async def add_position(self, position: Position):
         """Add a new position to the portfolio"""

@@ -25,7 +25,7 @@ from utils.exceptions import MarketDataValidationError
 from utils.error_handler import handle_error_async
 from risk.validation import MarketDataValidation
 from signals.market_state import prepare_market_state
-from types.base_types import MarketState
+from bot_types.base_types import MarketState
 
 DEFAULT_MIN_TRADE_VALUE = Decimal('10.0')  # 10 USDT minimum by default
 
@@ -33,29 +33,34 @@ class MarketData:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.logger = ctx.logger or logging.getLogger(__name__)
-        self.exchange_interface = ctx.exchange_interface
+        self.initialized = False
+        self.exchange_interface = None  # Will be set in initialize()
+        self.validation = None  # Will be set in initialize()
         self.nh = NumericHandler()
-        self.min_trade_value = Decimal(str(ctx.config.get("min_trade_value", DEFAULT_MIN_TRADE_VALUE)))
-        self.min_sizes = {
-            symbol: {
-                "min_qty": Decimal(str(data.get("min_qty", "0"))),
-                "min_notional": Decimal(str(data.get("min_notional", self.min_trade_value)))
-            }
-            for symbol, data in ctx.config.get("min_trade_sizes", {}).items()
-        }
-        self.data_cache: Dict[str, pd.DataFrame] = {}
-        self.last_update: Dict[str, float] = {}
-        self.update_interval = 60  # seconds
-        self._lock = asyncio.Lock()
-        self.cache_timeout = ctx.config.get("market_data_cache_timeout", 60)  # seconds
-        self.CACHE_TTL = 300
-        self.max_cache_size = 1000  # Limit to prevent unbounded growth
-        self.validation = MarketDataValidation(self.ctx.risk_manager.risk_limits, self.logger)
+        self._last_emergency_check = time.time()
+        self.EMERGENCY_CHECK_INTERVAL = 60  # Check every minute
+        
+        # Cache settings
         self.cache = {}
+        self.last_update = {}
+        self.CACHE_TTL = ctx.config.get("market_data_cache_timeout", 300)
+        self.max_cache_size = ctx.config.get("max_cache_size", 1000)
+        
+        # Trading limits
+        self.min_trade_value = Decimal(str(ctx.config.get("min_trade_value", DEFAULT_MIN_TRADE_VALUE)))
+        self.min_sizes = {}
 
-    async def initialize(self):
-        # Initialization logic
-        pass
+    async def initialize(self) -> bool:
+        """Initialize market data service"""
+        try:
+            if self.initialized:
+                return True
+            self.validation = MarketDataValidation(self.ctx.risk_limits, self.logger)
+            self.initialized = True
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize market data: {e}")
+            return False
 
     async def get_signals(self) -> List[Dict[str, Any]]:
         try:
@@ -369,6 +374,31 @@ class MarketData:
         except Exception as e:
             handle_error(e, "MarketData.get_market_state")
             return None
+
+    async def validate_market_conditions(self, data: Dict[str, Any]) -> bool:
+        """Validate current market conditions against risk limits"""
+        try:
+            if not self.initialized:
+                await self.initialize()
+                if not self.initialized:
+                    return False
+
+            current_time = time.time()
+            if current_time - self._last_emergency_check >= self.EMERGENCY_CHECK_INTERVAL:
+                self._last_emergency_check = current_time
+                
+                # Check for emergency stop conditions
+                if "drawdown" in data:
+                    drawdown = self.nh.to_decimal(data["drawdown"])
+                    if drawdown >= self.ctx.portfolio_manager.risk_limits.emergency_stop_pct:
+                        self.logger.error(f"Emergency stop condition detected: {drawdown}")
+                        return False
+
+            return self.validation.validate_market_data(data)
+
+        except Exception as e:
+            await handle_error_async(e, "MarketData.validate_market_conditions", self.logger)
+            return False
 
 if __name__ == "__main__":
     import asyncio

@@ -8,7 +8,8 @@ from decimal import Decimal
 import numpy as np
 import time
 from datetime import datetime
-from types.base_types import MarketState
+from bot_types.base_types import MarketState, ValidationResult
+from bot_types.base_types import Validatable
 
 @dataclass
 class TradeMetrics:
@@ -126,7 +127,7 @@ class SimulationResult:
             return False
 
 @dataclass
-class SignalMetadata:
+class SignalMetadata(Validatable):
     """Enhanced signal metadata"""
     # Required fields (no defaults)
     timeframe: str
@@ -147,18 +148,28 @@ class SignalMetadata:
     metadata: Dict[str, Any] = field(default_factory=dict)
     additional_data: Dict[str, Any] = field(default_factory=dict)
 
-    def is_valid(self) -> bool:
+    def validate(self) -> ValidationResult:
         """Validate signal metadata"""
         try:
-            return (
-                self.probability > 0 and
-                self.probability <= 1 and
-                self.entry_price > 0 and
-                self.leverage > 0 and
-                time.time() - self.timestamp < 300  # 5 minute staleness check
+            if self.probability < Decimal('0') or self.probability > Decimal('1'):
+                return ValidationResult(
+                    is_valid=False,
+                    error_message="Probability must be between 0 and 1"
+                )
+                
+            if self.leverage < Decimal('1'):
+                return ValidationResult(
+                    is_valid=False,
+                    error_message="Leverage cannot be less than 1"
+                )
+
+            return ValidationResult(is_valid=True)
+
+        except Exception as e:
+            return ValidationResult(
+                is_valid=False, 
+                error_message=f"Signal validation failed: {str(e)}"
             )
-        except Exception:
-            return False
 
 @dataclass
 class Signal:

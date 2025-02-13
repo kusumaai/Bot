@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Module: trading/ratchet.py
-Production-ready ratchet stop system with guaranteed execution
+Position size ratcheting implementation
 """
 
 from typing import Dict, Any, Optional, Tuple, List
@@ -14,7 +14,7 @@ from datetime import datetime
 import logging
 
 from risk.limits import RiskLimits
-from risk.position import Position
+from trading.position import Position
 from utils.error_handler import handle_error, handle_error_async
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import RatchetError
@@ -39,9 +39,11 @@ class RatchetManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self.logger = ctx.logger or logging.getLogger(__name__)
+        self.initialized = False
         self._lock = asyncio.Lock()
         self.active_trades: Dict[str, Dict[str, Any]] = {}
         self.nh = NumericHandler()
+        self.risk_limits = None
         self.max_ratchets = 1000  # Limit to prevent unbounded growth
         
         # Load thresholds from config
@@ -66,6 +68,90 @@ class RatchetManager:
             raise ValueError("Ratchet thresholds and lock-ins must have same length")
         if not all(x < y for x, y in zip(self.thresholds[:-1], self.thresholds[1:])):
             raise ValueError("Ratchet thresholds must be ascending")
+
+    async def initialize(self) -> bool:
+        """Initialize ratchet manager"""
+        try:
+            if self.initialized:
+                return True
+                
+            if not self.ctx.portfolio_manager or not self.ctx.portfolio_manager.initialized:
+                self.logger.error("Portfolio manager must be initialized first")
+                return False
+                
+            self.risk_limits = self.ctx.portfolio_manager.risk_limits
+            self.initialized = True
+            return True
+            
+        except Exception as e:
+            await handle_error_async(e, "RatchetManager.initialize", self.logger)
+            return False
+
+    async def update_trailing_stops(self) -> None:
+        """Update trailing stops for all active trades"""
+        try:
+            if not self.initialized:
+                await self.initialize()
+                if not self.initialized:
+                    return
+
+            async with self._lock:
+                for trade_id, trade_data in list(self.active_trades.items()):
+                    try:
+                        current_price = await self._get_current_price(trade_id)
+                        if not current_price:
+                            continue
+
+                        # Check emergency stop conditions
+                        drawdown = self._calculate_trade_drawdown(trade_data, current_price)
+                        if drawdown >= self.risk_limits.emergency_stop_pct:
+                            await self._close_trade(
+                                trade_id,
+                                f"Emergency stop triggered: drawdown {drawdown} >= {self.risk_limits.emergency_stop_pct}"
+                            )
+                            continue
+
+                        # Update trailing stop if price has moved favorably
+                        await self._update_single_trailing_stop(trade_id, trade_data, current_price)
+
+                    except Exception as e:
+                        await handle_error_async(e, f"RatchetManager.update_trailing_stops for trade {trade_id}", self.logger)
+
+        except Exception as e:
+            await handle_error_async(e, "RatchetManager.update_trailing_stops", self.logger)
+
+    async def _get_current_price(self, trade_id: str) -> Optional[Decimal]:
+        """Get current price for a trade"""
+        try:
+            if not self.ctx.market_data:
+                return None
+            data = await self.ctx.market_data.fetch_market_data()
+            return self.nh.to_decimal(data.get("price", 0))
+        except Exception as e:
+            await handle_error_async(e, "RatchetManager._get_current_price", self.logger)
+            return None
+
+    def _calculate_trade_drawdown(self, trade_data: Dict[str, Any], current_price: Decimal) -> Decimal:
+        """Calculate drawdown for a single trade"""
+        try:
+            entry_price = self.nh.to_decimal(trade_data["entry_price"])
+            if entry_price <= 0:
+                return Decimal('0')
+            
+            return abs((current_price - entry_price) / entry_price)
+        except Exception as e:
+            self.logger.error(f"Error calculating trade drawdown: {str(e)}")
+            return Decimal('0')
+
+    async def _close_trade(self, trade_id: str, reason: str) -> None:
+        """Close a trade due to risk limit breach"""
+        try:
+            self.logger.warning(f"Closing trade {trade_id}: {reason}")
+            if trade_id in self.active_trades:
+                # Implement trade closing logic here
+                del self.active_trades[trade_id]
+        except Exception as e:
+            await handle_error_async(e, "RatchetManager._close_trade", self.logger)
 
     async def initialize_trade(self, trade_id: str, entry_price: Decimal, symbol: str):
         normalized_id = self._normalize_trade_id(trade_id, symbol)

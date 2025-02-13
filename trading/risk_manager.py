@@ -16,21 +16,37 @@ from utils.numeric_handler import NumericHandler
 class RiskManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
-        self.logger = ctx.logger
+        self.logger = ctx.logger or logging.getLogger(__name__)
         self._lock = asyncio.Lock()
-        self.position_limits = self._load_position_limits()
-        self.risk_limits = {
-            'max_position_size': Decimal(str(ctx.config.get('max_position_pct', '10'))) / Decimal('100'),
-            'max_drawdown': Decimal(str(ctx.config.get('max_drawdown', '10'))) / Decimal('100'),
-            'max_daily_loss': Decimal(str(ctx.config.get('max_daily_loss', '3'))) / Decimal('100'),
-            'max_positions': ctx.config.get('max_positions', 10)
-        }
-        self.portfolio = PortfolioManager(self.risk_limits)
+        self.initialized = False
+        
+        # Initialize basic components first
         self.nh = NumericHandler()
+        
+        # Defer risk limits initialization until initialize() is called
+        self.risk_limits = None
+        self.position_limits = None
 
-    async def initialize(self):
-        # Initialize risk manager components
-        await self.portfolio.initialize()
+    async def initialize(self) -> bool:
+        """Initialize risk manager components"""
+        try:
+            if self.initialized:
+                return True
+                
+            if not self.ctx.portfolio_manager or not self.ctx.portfolio_manager.initialized:
+                self.logger.error("Portfolio manager must be initialized first")
+                return False
+                
+            # Now we can safely get risk limits from portfolio manager
+            self.risk_limits = self.ctx.portfolio_manager.risk_limits
+            self.position_limits = self._load_position_limits()
+            
+            self.initialized = True
+            return True
+            
+        except Exception as e:
+            await handle_error_async(e, "RiskManager.initialize", self.logger)
+            return False
 
     def _load_position_limits(self) -> Dict[str, Any]:
         # Implementation to load position limits from configuration

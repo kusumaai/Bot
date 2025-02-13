@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, Any
 from dataclasses import dataclass, field
 from decimal import Decimal
-from types.base_types import MarketState
+from bot_types.base_types import MarketState
 
 @dataclass
 class MarketState:
