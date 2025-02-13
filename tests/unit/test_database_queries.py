@@ -3,9 +3,9 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from database.queries import DatabaseQueries
-from database.connection import DatabaseConnection
-from utils.error_handler import DatabaseError
+from src.database.queries import DatabaseQueries
+from src.database.connection import DatabaseConnection
+from src.utils.error_handler import DatabaseError
 
 
 @pytest.fixture

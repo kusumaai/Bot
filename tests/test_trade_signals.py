@@ -1,6 +1,6 @@
 import pytest
-from signals.ga_synergy import generate_ga_signals, GASignal
-from utils.exceptions import InvalidOrderError
+from src.signals.ga_synergy import generate_ga_signals, GASignal
+from src.utils.exceptions import InvalidOrderError
 from decimal import Decimal
 from typing import Dict, Any
 

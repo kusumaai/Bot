@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from utils.error_handler import (
+from src.utils.error_handler import (
     ExchangeError,
     DatabaseError,
     handle_error,

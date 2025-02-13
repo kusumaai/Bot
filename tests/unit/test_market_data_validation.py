@@ -1,9 +1,9 @@
 import pytest
 from decimal import Decimal
 
-from risk.limits import RiskLimits
-from risk.validation import MarketDataValidation
-from utils.error_handler import ValidationError
+from src.risk.limits import RiskLimits
+from src.risk.validation import MarketDataValidation
+from src.utils.error_handler import ValidationError
 import logging
 from unittest.mock import MagicMock
 

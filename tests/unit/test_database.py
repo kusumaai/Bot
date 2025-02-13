@@ -3,9 +3,9 @@ from decimal import Decimal
 import logging
 from datetime import datetime, timezone
 
-from database.connection import DatabaseConnection
-from database.queries import DatabaseQueries
-from utils.error_handler import DatabaseError
+from src.database.connection import DatabaseConnection
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import DatabaseError
 
 
 @pytest.mark.asyncio

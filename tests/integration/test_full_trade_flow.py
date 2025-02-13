@@ -1,11 +1,11 @@
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from execution.main_loop import MainLoop
-from execution.exchange_interface import ExchangeInterface
-from risk.manager import RiskManager
-from database.queries import DatabaseQueries
-from utils.logger import setup_logging
+from src.execution.main_loop import MainLoop
+from src.execution.exchange_interface import ExchangeInterface
+from src.risk.manager import RiskManager
+from src.database.queries import DatabaseQueries
+from src.utils.logger import setup_logging
 
 @pytest.fixture
 def fake_exchange_interface():

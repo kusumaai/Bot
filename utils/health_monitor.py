@@ -14,11 +14,10 @@ import numpy as np
 from dataclasses import dataclass, field
 import logging
 from decimal import Decimal
-from utils.error_handler import handle_error, handle_error_async
-from utils.numeric import NumericHandler
+from src.utils.error_handler import handle_error, handle_error_async
+from src.utils.numeric import NumericHandler
 from collections import deque, defaultdict
 import aiohttp
-
 @dataclass
 class ComponentHealth:
     name: str

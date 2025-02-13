@@ -3,11 +3,11 @@ from decimal import Decimal
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from exchanges.exchange_manager import ExchangeManager
-from execution.exchange_interface import ExchangeInterface
-from utils.error_handler import ExchangeError
-from risk.manager import RiskManager
-from database.queries import DatabaseQueries
+from src.exchanges.exchange_manager import ExchangeManager
+from src.execution.exchange_interface import ExchangeInterface
+from src.utils.error_handler import ExchangeError
+from src.risk.manager import RiskManager
+from src.database.queries import DatabaseQueries
 
 
 @pytest.fixture
@@ -40,6 +40,13 @@ def db_queries():
 def logger():
     """Provide a mocked logger."""
     return MagicMock(spec=logging.Logger)
+
+
+@pytest.fixture
+def mock_exchange_interface():
+    mock = MagicMock(spec=ExchangeInterface)
+    mock.fetch_candles = AsyncMock(return_value=[{"timestamp": 1600000000000, "close": "50000"}])
+    return mock
 
 
 @pytest.fixture

@@ -2,13 +2,13 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from decimal import Decimal
 
-from execution.main_loop import MainLoop
-from execution.exchange_interface import ExchangeInterface
-from risk.manager import RiskManager
-from risk.limits import RiskLimits
-from database.queries import DatabaseQueries
-from utils.logger import setup_logging
-from utils.health_monitor import HealthMonitor
+from src.execution.main_loop import MainLoop
+from src.execution.exchange_interface import ExchangeInterface
+from src.risk.manager import RiskManager
+from src.risk.limits import RiskLimits
+from src.database.queries import DatabaseQueries
+from src.utils.logger import setup_logging
+from src.utils.health_monitor import HealthMonitor
 
 
 @pytest.fixture

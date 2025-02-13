@@ -5,17 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psutil
 import time
 from decimal import Decimal
-
-from utils.health_monitor import HealthMonitor
-from utils.error_handler import handle_error_async
-from database.queries import DatabaseQueries
-
+from src.utils.health_monitor import HealthMonitor
+from src.utils.error_handler import handle_error_async
+from src.database.queries import DatabaseQueries
 
 @pytest.fixture
 def mock_db_queries():
     """Provide a mocked DatabaseQueries instance."""
     return AsyncMock(spec=DatabaseQueries)
-
 
 @pytest.fixture
 def mock_exchange_interface():
@@ -25,12 +22,10 @@ def mock_exchange_interface():
     mock_interface.exchange.ping = AsyncMock(return_value=True)
     return mock_interface
 
-
 @pytest.fixture
-def logger():
-    """Provide a mocked logger."""
-    return MagicMock(spec=logging.Logger)
-
+def mock_logger():
+    mock = MagicMock()
+    return mock
 
 @pytest.fixture
 def mock_context():
@@ -41,12 +36,10 @@ def mock_context():
     ctx.market_data = MagicMock()
     return ctx
 
-
 @pytest.fixture
-def health_monitor(mock_context):
+def health_monitor(mock_logger, mock_db_queries):
     """Provide a HealthMonitor instance."""
-    return HealthMonitor(mock_context)
-
+    return HealthMonitor(db_queries=mock_db_queries, logger=mock_logger)
 
 @pytest.mark.asyncio
 async def test_check_database_success(health_monitor):
@@ -59,7 +52,6 @@ async def test_check_database_success(health_monitor):
     assert error is None
     health_monitor.db_queries.ping_database.assert_awaited_once()
 
-
 @pytest.mark.asyncio
 async def test_check_database_failure(health_monitor):
     """Test database connectivity failure."""
@@ -70,7 +62,6 @@ async def test_check_database_failure(health_monitor):
     assert response_time >= 0
     assert error == "DB Connection Failed"
     health_monitor.db_queries.ping_database.assert_awaited_once()
-
 
 @pytest.mark.asyncio
 async def test_check_exchange_success(health_monitor):
@@ -83,7 +74,6 @@ async def test_check_exchange_success(health_monitor):
     assert error is None
     health_monitor.exchange_interface.exchange.ping.assert_awaited_once()
 
-
 @pytest.mark.asyncio
 async def test_check_exchange_failure(health_monitor):
     """Test exchange connectivity failure."""
@@ -94,7 +84,6 @@ async def test_check_exchange_failure(health_monitor):
     assert response_time >= 0
     assert error == "Exchange Unreachable"
     health_monitor.exchange_interface.exchange.ping.assert_awaited_once()
-
 
 @pytest.mark.asyncio
 async def test_is_system_healthy_all_components_healthy(health_monitor):
@@ -109,7 +98,6 @@ async def test_is_system_healthy_all_components_healthy(health_monitor):
     health_monitor.check_exchange.assert_awaited_once()
     health_monitor.check_market_data.assert_awaited_once()
 
-
 @pytest.mark.asyncio
 async def test_is_system_healthy_one_component_unhealthy(health_monitor):
     """Test overall system health when one component is unhealthy."""
@@ -123,7 +111,6 @@ async def test_is_system_healthy_one_component_unhealthy(health_monitor):
     health_monitor.check_exchange.assert_awaited_once()
     health_monitor.check_market_data.assert_awaited_once()
 
-
 @pytest.mark.asyncio
 async def test_collect_system_metrics_success(health_monitor):
     """Test successful collection of system metrics."""
@@ -136,18 +123,16 @@ async def test_collect_system_metrics_success(health_monitor):
         assert metrics['memory_usage'] == 75.0
         assert metrics['disk_usage'] == 60.0
 
-
 @pytest.mark.asyncio
-async def test_collect_system_metrics_failure(health_monitor, logger):
+async def test_collect_system_metrics_failure(health_monitor, mock_logger):
     """Test failure in collecting system metrics."""
     with patch('psutil.cpu_percent', side_effect=Exception("CPU fetch error")), \
          patch('psutil.virtual_memory', return_value=MagicMock(percent=75.0)), \
          patch('psutil.disk_usage', return_value=MagicMock(percent=60.0)):
         
         metrics = await health_monitor.collect_system_metrics()
-        assert 'cpu_usage' not in metrics  # Assuming implementation skips failed metrics
-        logger.error.assert_called_with("Failed to collect CPU usage: CPU fetch error")
-
+        assert 'cpu_usage' not in metrics  # Example assumption
+        mock_logger.error.assert_called_with("Failed to collect CPU usage: CPU fetch error")
 
 @pytest.mark.asyncio
 async def test_check_system_resources_success(health_monitor):
@@ -165,7 +150,6 @@ async def test_check_system_resources_success(health_monitor):
         assert metrics['disk_healthy'] is True
         assert metrics['cpu_healthy'] is True
 
-
 @pytest.mark.asyncio
 async def test_check_system_resources_critical(health_monitor):
     """Test system resources in critical state."""
@@ -180,7 +164,6 @@ async def test_check_system_resources_critical(health_monitor):
         assert metrics['cpu_healthy'] is False
         assert 'System resources critical' in health_monitor.components['system'].message
 
-
 @pytest.mark.asyncio
 async def test_check_market_data_success(health_monitor):
     """Test successful market data check."""
@@ -193,7 +176,6 @@ async def test_check_market_data_success(health_monitor):
     assert response_time >= 0
     assert error is None
     assert health_monitor.components['market_data'].status is True
-
 
 @pytest.mark.asyncio
 async def test_check_market_data_failure(health_monitor):
@@ -208,7 +190,6 @@ async def test_check_market_data_failure(health_monitor):
     assert "No market data available" in error
     assert health_monitor.components['market_data'].status is False
 
-
 @pytest.mark.asyncio
 async def test_update_component_metrics(health_monitor):
     """Test component metric updates."""
@@ -222,7 +203,6 @@ async def test_update_component_metrics(health_monitor):
     assert len(health_monitor.latency_history[component]) == 11
     assert health_monitor.components[component].response_time == 0.1
 
-
 @pytest.mark.asyncio
 async def test_should_emergency_shutdown(health_monitor):
     """Test emergency shutdown conditions."""
@@ -233,7 +213,6 @@ async def test_should_emergency_shutdown(health_monitor):
     
     assert health_monitor.should_emergency_shutdown() is True
 
-
 @pytest.mark.asyncio
 async def test_get_system_metrics_failure(health_monitor):
     """Test system metrics collection failure."""
@@ -242,7 +221,6 @@ async def test_get_system_metrics_failure(health_monitor):
         assert metrics['cpu_used_pct'] == 100.0  # Fail-safe value
         assert metrics['memory_used_pct'] == 100.0
         assert metrics['disk_used_pct'] == 100.0
-
 
 @pytest.mark.asyncio
 async def test_check_system_readiness_fresh_system(health_monitor):
@@ -271,7 +249,6 @@ async def test_check_system_readiness_fresh_system(health_monitor):
         'overall': False
     }
 
-
 @pytest.mark.asyncio
 async def test_check_system_readiness_partially_ready(health_monitor):
     """Test system readiness check with partial data."""
@@ -298,7 +275,6 @@ async def test_check_system_readiness_partially_ready(health_monitor):
         'market_data': True,
         'overall': False
     }
-
 
 @pytest.mark.asyncio
 async def test_check_system_readiness_fully_ready(health_monitor):
@@ -327,7 +303,6 @@ async def test_check_system_readiness_fully_ready(health_monitor):
         'overall': True
     }
 
-
 @pytest.mark.asyncio
 async def test_check_system_readiness_db_error(health_monitor):
     """Test system readiness check with database error."""
@@ -344,7 +319,6 @@ async def test_check_system_readiness_db_error(health_monitor):
         'overall': False
     }
 
-
 @pytest.mark.asyncio
 async def test_check_system_readiness_no_db_connection(health_monitor):
     """Test system readiness check with no database connection."""
@@ -359,4 +333,4 @@ async def test_check_system_readiness_no_db_connection(health_monitor):
         'ga_data': False,
         'market_data': False,
         'overall': False
-    } 
+    }

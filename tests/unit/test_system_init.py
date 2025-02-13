@@ -2,10 +2,10 @@ import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from startup.system_init import SystemInitializer
-from database.connection import DatabaseConnection
-from exchanges.exchange_manager import ExchangeManager
-from utils.error_handler import handle_error, handle_error_async
+from src.startup.system_init import SystemInitializer
+from src.database.connection import DatabaseConnection
+from src.exchanges.exchange_manager import ExchangeManager
+from src.utils.error_handler import handle_error, handle_error_async
 
 
 @pytest.fixture

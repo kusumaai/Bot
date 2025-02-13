@@ -3,8 +3,8 @@ from decimal import Decimal
 import asyncio
 from unittest.mock import MagicMock
 
-from exchanges.rate_limiter import RateLimiter, RateLimitConfig
-from utils.error_handler import RateLimitExceeded
+from src.exchanges.rate_limiter import RateLimiter, RateLimitConfig
+from src.utils.error_handler import RateLimitExceeded
 
 
 @pytest.mark.asyncio

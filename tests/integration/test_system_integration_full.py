@@ -1,9 +1,9 @@
 import pytest
 import asyncio
-from startup.system_init import SystemInitializer
-from database.connection import DatabaseConnection
-from exchanges.exchange_manager import ExchangeManager
-from utils.logger import setup_logging
+from src.startup.system_init import SystemInitializer
+from src.database.connection import DatabaseConnection
+from src.exchanges.exchange_manager import ExchangeManager
+from src.utils.logger import setup_logging
 
 class DummyDBConnection:
     async def verify_connection(self):

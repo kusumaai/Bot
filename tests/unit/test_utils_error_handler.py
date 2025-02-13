@@ -1,13 +1,12 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from utils.error_handler import (
+from src.utils.error_handler import (
     DatabaseError,
     ExchangeError,
     handle_error,
     handle_error_async
 )
 import logging
-
 
 @pytest.fixture
 def mock_logger():

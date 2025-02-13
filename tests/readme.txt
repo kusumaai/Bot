@@ -8,7 +8,7 @@ KillaBot Test Suite
 
 This directory contains the test suite for the KillaBot trading system.
 
-Directory Structure:
+Directory Structure: 
 
 - unit/: Unit tests for individual components
 - integration/: Integration tests for component interactions
@@ -16,7 +16,6 @@ Directory Structure:
 - conftest.py: PyTest configuration and shared fixtures
 
 Running Tests
-
 -------------
 
 From project root:

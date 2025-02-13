@@ -5,10 +5,10 @@ import logging
 import asyncio
 import time
 
-from trading.portfolio import PortfolioManager
-from trading.position import Position
-from utils.error_handler import PortfolioError
-from risk.limits import RiskLimits
+from src.trading.portfolio import PortfolioManager
+from src.trading.position import Position
+from src.utils.error_handler import PortfolioError
+from src.risk.limits import RiskLimits
 
 
 @pytest.fixture

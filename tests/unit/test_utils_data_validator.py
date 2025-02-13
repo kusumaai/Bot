@@ -1,8 +1,7 @@
 import pytest
 from decimal import Decimal
-from utils.data_validator import DataValidator
-from utils.error_handler import ValidationError
-
+from src.utils.data_validator import DataValidator
+from src.utils.error_handler import ValidationError
 
 @pytest.fixture
 def data_validator():

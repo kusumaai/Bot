@@ -3,10 +3,9 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from risk.validation import MarketDataValidation
-from risk.limits import RiskLimits
-from utils.error_handler import ValidationError
-
+from src.risk.validation import MarketDataValidation
+from src.risk.limits import RiskLimits
+from src.utils.error_handler import ValidationError
 
 @pytest.fixture
 def risk_limits():

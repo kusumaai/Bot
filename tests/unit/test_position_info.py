@@ -2,7 +2,7 @@ import pytest
 from decimal import Decimal
 from datetime import datetime, timezone
 
-from trading.position_info import PositionInfo
+from src.trading.position_info import PositionInfo
 
 
 def test_position_info_initialization():

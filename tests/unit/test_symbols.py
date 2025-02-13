@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from execution.market_data import MarketData
-from utils.error_handler import ValidationError
+from src.execution.market_data import MarketData
+from src.utils.error_handler import ValidationError
 
 
 @pytest.fixture

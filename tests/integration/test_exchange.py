@@ -6,14 +6,14 @@ import os
 from typing import Dict, Any
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
-from execution.exchange_interface import ExchangeInterface
-from utils.error_handler import ExchangeError
-from risk.manager import RiskManager
-from risk.limits import RiskLimits
-from database.queries import DatabaseQueries
+from src.exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
+from src.execution.exchange_interface import ExchangeInterface
+from src.utils.error_handler import ExchangeError
+from src.risk.manager import RiskManager
+from src.risk.limits import RiskLimits
+from src.database.queries import DatabaseQueries
 
-
+    
 @pytest.fixture
 def exchange_credentials():
     """Provide exchange credentials for testing."""

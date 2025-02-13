@@ -1,7 +1,7 @@
 from decimal import Decimal
 import pytest
-from trading.math import MathHandler
-from utils.exceptions import MathError
+from src.trading.math import MathHandler
+from src.utils.exceptions import MathError
 
 @pytest.fixture
 def math_handler():

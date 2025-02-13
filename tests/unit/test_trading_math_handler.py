@@ -1,18 +1,32 @@
 import pytest
-from utils.numeric_handler import NumericHandler
-from utils.exceptions import MathError
+from src.utils.numeric_handler import NumericHandler
+from src.utils.exceptions import MathError
 from decimal import Decimal
+from src.trading.math_handler import TradingMathHandler
 
 @pytest.fixture
 def numeric_handler():
     return NumericHandler()
 
-def test_safe_divide(numeric_handler):
-    result = numeric_handler.safe_divide(Decimal('10'), Decimal('2'))
-    assert result == Decimal('5')
+@pytest.fixture
+def math_handler():
+    return TradingMathHandler()
+
+@pytest.mark.asyncio
+async def test_safe_divide(math_handler):
+    a = Decimal('10')
+    b = Decimal('2')
+    assert math_handler.safe_divide(a, b) == Decimal('5')
     
-    with pytest.raises(MathError):
-        numeric_handler.safe_divide(Decimal('10'), Decimal('0'))
+    b = Decimal('0')
+    assert math_handler.safe_divide(a, b) == Decimal('0')
+
+@pytest.mark.asyncio
+async def test_safe_divide_invalid(math_handler):
+    a = Decimal('10')
+    b = 'invalid'
+    with pytest.raises(TypeError):
+        math_handler.safe_divide(a, b)
 
 def test_to_decimal(numeric_handler):
     assert numeric_handler.to_decimal("123.45") == Decimal("123.45")

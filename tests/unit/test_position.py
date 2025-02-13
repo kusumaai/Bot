@@ -2,8 +2,8 @@ import pytest
 from decimal import Decimal
 from datetime import datetime
 
-from trading.position import Position
-from utils.error_handler import PositionError
+from src.trading.position import Position
+from src.utils.error_handler import PositionError
 
 
 @pytest.mark.asyncio

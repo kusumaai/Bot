@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from utils.health_monitor import HealthMonitor
+from src.utils.health_monitor import HealthMonitor
 
 # Create fake objects to simulate health monitor conditions
 class FakeDBQueries:

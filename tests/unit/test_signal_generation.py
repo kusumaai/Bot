@@ -2,9 +2,9 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from signals.ml_signals import generate_ml_signals
-from signals.ga_synergy import generate_ga_signals
-from utils.error_handler import ValidationError
+from src.signals.ml_signals import generate_ml_signals
+from src.signals.ga_synergy import generate_ga_signals
+from src.utils.error_handler import ValidationError
 
 
 def test_generate_ml_signals_bullish():

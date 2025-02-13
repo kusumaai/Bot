@@ -1,9 +1,9 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from utils.health_monitor import HealthMonitor
-from database.queries import DatabaseQueries
-from utils.error_handler import handle_error_async
+from src.utils.health_monitor import HealthMonitor
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import handle_error_async
 
 
 @pytest.fixture

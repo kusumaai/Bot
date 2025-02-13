@@ -7,8 +7,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import time
 import logging
 
-from utils.error_handler import handle_error
-from risk.validation import validate_market_data, validate_risk_parameters
+from src.utils.error_handler import handle_error
+from src.risk.validation import validate_market_data, validate_risk_parameters
 
 def validate_signal(signal: Dict[str, Any], ctx: Any) -> bool:
     """Validate trading signal meets minimum requirements and risk parameters."""

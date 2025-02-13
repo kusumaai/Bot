@@ -1,7 +1,7 @@
 from unittest import mock
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from execution.main_loop import main_loop
+from src.execution.main_loop import main_loop
 
 @pytest.fixture
 def mock_ctx():

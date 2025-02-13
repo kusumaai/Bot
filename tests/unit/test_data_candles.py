@@ -4,11 +4,11 @@ import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from data.candles import CandleManager, calculate_atr, CandleProcessor
-from utils.error_handler import ValidationError
-from database.database import DatabaseConnection
-from utils.logger import setup_logging
-from signals.ml_signals import MLSignal
+from src.data.candles import CandleManager, calculate_atr, CandleProcessor
+from src.utils.error_handler import ValidationError
+from src.database.database import DatabaseConnection
+from src.utils.logger import setup_logging
+from src.signals.ml_signals import MLSignal
 
 
 @pytest.fixture
@@ -137,4 +137,47 @@ async def test_fetch_and_store_candles_exchange_error(candle_manager, logger):
         mock_fetch.assert_awaited_once_with(symbol, timeframe, limit=limit)
         logger.error.assert_called_with(
             f"Failed to fetch candles for {symbol} - {timeframe}: Exchange API Error"
-        ) 
+        )
+
+
+@pytest.fixture
+def mock_db_connection():
+    """Provide a mocked database connection."""
+    mock = MagicMock()
+    mock.insert_candles = AsyncMock()
+    return mock
+
+
+@pytest.fixture
+def mock_exchange_interface():
+    """Provide a mocked ExchangeInterface."""
+    mock = MagicMock()
+    mock.fetch_candles = AsyncMock(return_value=[{"timestamp": 1600000000000, "close": "50000"}])
+    return mock
+
+
+@pytest.fixture
+def mock_logger():
+    """Provide a mocked logger."""
+    mock = MagicMock()
+    return mock
+
+
+@pytest.fixture
+def candle_manager(mock_db_connection, mock_exchange_interface, mock_logger):
+    """Provide an instance of CandleManager with mocked dependencies."""
+    return CandleManager(
+        db_connection=mock_db_connection,
+        exchange_interface=mock_exchange_interface,
+        logger=mock_logger
+    )
+
+
+@pytest.mark.asyncio
+async def test_insert_candles_success(candle_manager, mock_db_connection):
+    """Test successful insertion of candles into the database."""
+    candles = [{"timestamp": 1600000000000, "close": "50000"}]
+    
+    await candle_manager.insert_candles(candles)
+    
+    mock_db_connection.insert_candles.assert_awaited_once_with(candles) 

@@ -1,7 +1,7 @@
 import pytest
 from decimal import Decimal
-from risk.manager import RiskManager
-from utils.error_handler import RiskError
+from src.risk.manager import RiskManager
+from src.utils.error_handler import RiskError
 
 @pytest.fixture
 def dummy_risk_limits():

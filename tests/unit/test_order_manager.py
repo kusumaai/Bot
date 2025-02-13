@@ -3,32 +3,36 @@ import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
-from execution.order_manager import OrderManager
-from execution.exchange_interface import ExchangeInterface
-from utils.error_handler import ExchangeError, OrderError
-from database.queries import DatabaseQueries
+from src.execution.order_manager import OrderManager
+from src.execution.exchange_interface import ExchangeInterface
+from src.utils.error_handler import ExchangeError, OrderError
+from src.database.queries import DatabaseQueries
 
 
 @pytest.fixture
 def mock_exchange_interface():
     """Provide a mocked ExchangeInterface."""
-    interface = MagicMock(spec=ExchangeInterface)
-    interface.execute_trade = AsyncMock()
-    interface.cancel_trade = AsyncMock()
-    interface.get_order_status = AsyncMock()
-    return interface
+    mock = MagicMock()
+    mock.execute_trade = AsyncMock(return_value={'success': False, 'error': 'Risk Validation Failed'})
+    mock.create_order = AsyncMock(return_value=None)  # Simulate failure by returning None or appropriate value
+    mock.cancel_trade = AsyncMock()
+    mock.get_order_status = AsyncMock()
+    return mock
 
 
 @pytest.fixture
 def db_queries():
     """Provide a mocked DatabaseQueries instance."""
-    return AsyncMock(spec=DatabaseQueries)
+    mock = MagicMock()
+    mock.store_order = AsyncMock()
+    return mock
 
 
 @pytest.fixture
 def logger():
     """Provide a mocked logger."""
-    return MagicMock(spec=logging.Logger)
+    mock = MagicMock()
+    return mock
 
 
 @pytest.fixture
@@ -98,23 +102,23 @@ async def test_place_order_success(order_manager):
 
 
 @pytest.mark.asyncio
-async def test_place_order_exchange_failure(order_manager):
-    """Test place_order when exchange raises an error."""
-    order_manager.exchange_interface.execute_trade.side_effect = ExchangeError("Exchange Failed")
-
+async def test_place_order_exchange_failure(order_manager, mock_exchange_interface):
+    """Test order placement when exchange fails."""
+    mock_exchange_interface.create_order.return_value = None  # Simulate failure
+    
     result = await order_manager.place_order(
-        symbol='ETH/USDT',
+        symbol='BTC/USDT',
         side='sell',
-        amount=Decimal('1'),
-        order_type='market',
-        price=Decimal('3000')
+        amount=Decimal('0.1'),
+        order_type='limit',
+        price=Decimal('48000')
     )
+    
     assert result is False
-    order_manager.exchange_interface.execute_trade.assert_awaited_once()
+    mock_exchange_interface.execute_trade.assert_not_awaited()
+    mock_exchange_interface.create_order.assert_awaited_once_with('BTC/USDT', 'sell', Decimal('0.1'), 'limit', Decimal('48000'))
     order_manager.db_queries.store_order.assert_not_awaited()
-    order_manager.logger.error.assert_called_with(
-        "Failed to place order for ETH/USDT: Exchange Failed"
-    )
+    order_manager.logger.error.assert_called_with("Failed to place order for BTC/USDT: Exchange failure.")
 
 
 @pytest.mark.asyncio

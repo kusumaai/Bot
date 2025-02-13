@@ -4,12 +4,11 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 import asyncio
 
-from trading.ratchet import RatchetManager
-from execution.exchange_interface import ExchangeInterface
-from risk.limits import RiskLimits
-from database.queries import DatabaseQueries
-from utils.exceptions import RatchetError
-
+from src.trading.ratchet import RatchetManager
+from src.execution.exchange_interface import ExchangeInterface
+from src.risk.limits import RiskLimits
+from src.database.queries import DatabaseQueries
+from src.utils.exceptions import RatchetError
 
 @pytest.fixture
 def risk_limits():

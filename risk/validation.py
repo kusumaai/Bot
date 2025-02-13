@@ -13,17 +13,16 @@ import numpy as np
 import pandas as pd
 import logging
 import asyncio
-
-from utils.error_handler import handle_error, ValidationError
-from utils.numeric import NumericHandler
-from signals.market_state import prepare_market_state
-from bot_types.base_types import (
+from src.utils.error_handler import handle_error, ValidationError
+from src.utils.numeric import NumericHandler
+from src.signals.market_state import prepare_market_state
+from src.bot_types.base_types import (
     Position,
     ValidationResult,
     Validatable,
     MarketState
 )
-from .limits import RiskLimits
+from src.risk.limits import RiskLimits
 
 @dataclass
 class MarketDataValidation(Validatable):

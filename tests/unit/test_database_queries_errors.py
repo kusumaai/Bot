@@ -1,7 +1,7 @@
 import pytest
 import asyncio
-from database.queries import DatabaseQueries
-from utils.error_handler import DatabaseError
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import DatabaseError
 
 @pytest.fixture
 def fake_db_connection():

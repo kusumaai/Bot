@@ -5,9 +5,10 @@ Unit tests for risk management system
 import pytest
 from decimal import Decimal
 from typing import Dict, Any
-from bot_types.base_types import Position
-from risk.manager import RiskManager
-from risk.limits import RiskLimits
+from src.bot_types.base_types import Position
+from src.risk.manager import RiskManager
+from src.risk.limits import RiskLimits
+
 
 def test_position_size_calculation(test_context):
     """Test position size calculation with risk factors"""

@@ -1,7 +1,7 @@
 import os
 import logging
 import pytest
-from utils.logger import setup_logging
+from src.utils.logger import setup_logging
 
 def test_logger_format():
     logger = setup_logging(name="TestFormatLogger", level="INFO")

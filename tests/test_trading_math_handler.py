@@ -1,7 +1,7 @@
 from decimal import Decimal
 import pytest
-from utils.numeric_handler import NumericHandler
-from utils.exceptions import MathError
+from src.utils.numeric_handler import NumericHandler
+from src.utils.exceptions import MathError
 
 @pytest.fixture
 def numeric_handler():

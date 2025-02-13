@@ -1,9 +1,9 @@
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
-from utils.error_handler import ExchangeError, RateLimitExceeded
-from database.queries import DatabaseQueries
+from src.exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
+from src.utils.error_handler import ExchangeError, RateLimitExceeded
+from src.database.queries import DatabaseQueries
 
 
 @pytest.fixture

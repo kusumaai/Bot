@@ -9,7 +9,6 @@ ccxt>=2.4.0
 aiohttp>=3.8.1
 
 # Technical analysis
-
 pandas_ta>=0.3.14b0
 
 # System monitoring

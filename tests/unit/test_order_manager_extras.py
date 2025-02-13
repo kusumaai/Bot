@@ -2,8 +2,8 @@ import pytest
 import logging
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from execution.order_manager import OrderManager
-from utils.error_handler import OrderError
+from src.execution.order_manager import OrderManager
+from src.utils.error_handler import OrderError
 
 @pytest.fixture
 def fake_exchange_interface():

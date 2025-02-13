@@ -6,8 +6,8 @@ from tests.validation_tests import (
     test_store_trade_invalid_data,
   #  there are specific functions or classes to import
 )
-from utils.error_handler import DatabaseError
-from database.queries import DatabaseQueries
+from src.utils.error_handler import DatabaseError
+from src.database.queries import DatabaseQueries
 
 
 @pytest.mark.asyncio

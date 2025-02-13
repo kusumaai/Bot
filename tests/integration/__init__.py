@@ -1,1 +1,1 @@
-print("integration test package loaded.")
+print("integration test package loaded")

@@ -3,7 +3,7 @@ import logging
 import os
 from unittest.mock import patch, MagicMock
 
-from utils.logger import setup_logging
+from src.utils.logger import setup_logging
 
 
 def test_setup_logging_default():

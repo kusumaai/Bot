@@ -2,9 +2,8 @@ import logging
 import pytest
 from unittest.mock import MagicMock
 
-from utils.error_handler import DatabaseError, handle_error
-from utils.error_handler import handle_error_async
-
+from src.utils.error_handler import DatabaseError, handle_error
+from src.utils.error_handler import handle_error_async
 
 @pytest.fixture
 def mock_logger():

@@ -3,10 +3,10 @@ from decimal import Decimal
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-from trading.ratchet import RatchetManager
-from risk.limits import RiskLimits
-from execution.exchange_interface import ExchangeInterface
-from utils.exceptions import RatchetError
+from src.trading.ratchet import RatchetManager
+from src.risk.limits import RiskLimits
+from src.execution.exchange_interface import ExchangeInterface
+from src.utils.exceptions import RatchetError
 from typing import Dict, Any
 
 

@@ -4,10 +4,10 @@ from decimal import Decimal
 from datetime import datetime, timezone
 import pandas as pd
 
-from execution.market_data import MarketData
-from database.queries import DatabaseQueries
-from utils.error_handler import ExchangeError
-from signals.market_state import prepare_market_state, MarketState
+from src.execution.market_data import MarketData
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import ExchangeError
+from src.signals.market_state import prepare_market_state, MarketState
 
 
 @pytest.fixture

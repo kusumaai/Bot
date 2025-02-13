@@ -1,8 +1,8 @@
-from decimal import Decimal
+from decimal import Decimal 
 import time
 import pytest
-from trading.position import Position
-from utils.exceptions import PositionError
+from src.trading.position import Position
+from src.utils.exceptions import PositionError
 
 def test_position_creation():
     position = Position(

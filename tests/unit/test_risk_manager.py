@@ -4,32 +4,29 @@ import pytest
 from decimal import Decimal
 import logging
 
-from risk.manager import RiskManager, PositionInfo
-from risk.limits import RiskLimits
-from database.queries import DatabaseQueries
-
-
-from utils.error_handler import RiskError
-
+from src.risk.manager import RiskManager, PositionInfo
+from src.risk.limits import RiskLimits
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import RiskError
 
 @pytest.fixture
 def risk_limits():
     """Provide test risk limits"""
-    return RiskLimits.from_config({
-        'max_position_size': '0.1',
-        'min_position_size': '0.01',
-        'max_positions': 3,
-        'max_leverage': '2.0',
-        'max_drawdown': '0.1',
-        'max_daily_loss': '0.03',
-        'emergency_stop_pct': '3.0',
-        'risk_factor': '0.01',
-        'kelly_scaling': '0.5',
-        'max_correlation': '0.7',
-        'max_sector_exposure': '0.3',
-        'max_volatility': '0.05',
-        'min_liquidity': '100000'
-    })
+    return RiskLimits(
+        max_position_size=Decimal('0.1'),
+        min_position_size=Decimal('0.01'),
+        max_positions=3,
+        max_leverage='2.0',
+        max_drawdown='0.1',
+        max_daily_loss='0.03',
+        emergency_stop_pct='3.0',
+        risk_factor='0.01',
+        kelly_scaling='0.5',
+        max_correlation='0.7',
+        max_sector_exposure='0.3',
+        max_volatility='0.05',
+        min_liquidity='100000'
+    )
 
 
 @pytest.fixture
@@ -45,15 +42,14 @@ def logger():
 
 
 @pytest.mark.asyncio
-async def test_calculate_kelly_fraction():
+async def test_calculate_kelly_fraction(risk_manager):
     """Test Kelly fraction calculation."""
-    from trading.math import calculate_kelly_fraction
     probability = Decimal('0.6')
     odds = Decimal('1.5')
-    
-    kelly = calculate_kelly_fraction(probability, odds)
-    expected = (probability * (odds + 1) - 1) / odds  # (0.6 * 2.5 -1)/1.5 = (1.5 -1)/1.5 = 0.333...
-    assert kelly == Decimal('0.3333333333333333')
+    loss_target = Decimal('0.05')
+    kelly = risk_manager.calculate_kelly_fraction(probability, odds, loss_target)
+    expected_kelly = (probability * (odds + 1) - 1) / odds
+    assert kelly == expected_kelly.quantize(Decimal('0.0001'))
 
 
 @pytest.mark.asyncio

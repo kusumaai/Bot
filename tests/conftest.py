@@ -3,16 +3,32 @@
 Module: tests/conftest.py
 Test fixtures and configuration
 """
+
 import os
 import sys
+
+# Determine the project root directory and the src directory
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+src_path = os.path.join(project_root, 'src')
+
+# Add the src directory to sys.path so that modules inside src can be imported as top-level packages
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+# Optionally, also add the project root if needed
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import pytest
 import asyncio
 import logging
-
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, Any
-from database.connection import DatabaseConnection
+
+# It is assumed that each directory in src (database, execution, risk, trading, utils)
+# contains an __init__.py file to mark it as a package.
+from database.database import DatabaseConnection
 from execution.exchange_interface import ExchangeInterface
 from execution.market_data import MarketData
 from risk.manager import RiskManager
@@ -21,38 +37,26 @@ from trading.circuit_breaker import CircuitBreaker
 from trading.ratchet import RatchetManager
 from utils.health_monitor import HealthMonitor
 from utils.logger import setup_logging
-from utils.numeric import NumericHandler
+from utils.numeric_handler import NumericHandler
 from utils.error_handler import ExchangeError, RiskError, DatabaseError
 
+# Example fixture to provide a mock trading context to tests
 class MockContext:
     """Mock trading context for testing"""
+    
     def __init__(self):
-        self.logger = setup_logging('test')
+        self.logger = logging.getLogger("Test")
         self.config = {
-            'database': {
-                'path': 'data/test_trading.db'  # Use SQLite for tests
-            },
-            'exchange': {
-                'name': 'binance',
-                'api_key': 'test_key',
-                'api_secret': 'test_secret',
-                'paper_mode': True,
-                'rate_limit_per_second': 5
-            },
-            'risk_limits': {
-                'max_position_size': '1000',
-                'max_drawdown': '0.1',
-                'emergency_stop_pct': '0.15',
-                'max_leverage': '2.0',
-                'max_daily_loss': '0.03'
-            },
-            'symbols': ['BTC/USDT', 'ETH/USDT'],
-            'paper_mode': True,
-            'initial_balance': '10000'
+            "timeframe": "15m",
+            "emergency_stop_pct": -3,
+            "ratchet_thresholds": [2, 4, 6],
+            "ratchet_lock_ins": [1, 2, 3],
+            "kelly_scaling": 0.5,
+            "initial_balance": 10000,
+            "risk_factor": 0.1,
+            "database": {"path": "data/trading.db"}
         }
-        self.running = True
-        self.initialized = False
-        self.nh = NumericHandler()
+        self.db_pool = "data/candles.db"
 
 @pytest.fixture
 async def mock_db():
@@ -148,9 +152,9 @@ def trading_context(mock_db):
     ctx.db_connection = mock_db
     return ctx
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def event_loop():
-    """Create event loop for async tests"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+    """Create a new event loop for each test."""
+    loop = asyncio.new_event_loop()
     yield loop
     loop.close()

@@ -1,8 +1,8 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from execution.exchange_interface import ExchangeInterface
-from utils.error_handler import ExchangeError
+from src.execution.exchange_interface import ExchangeInterface
+from src.utils.error_handler import ExchangeError
 
 @pytest.fixture
 def fake_exchange_manager():

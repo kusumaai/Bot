@@ -1,7 +1,7 @@
 import logging
 import pytest
 from decimal import Decimal, InvalidOperation, DivisionByZero
-from utils.numeric_handler import NumericHandler
+from src.utils.numeric_handler import NumericHandler
 
 
 @pytest.fixture

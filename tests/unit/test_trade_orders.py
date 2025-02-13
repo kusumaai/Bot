@@ -3,12 +3,11 @@ from decimal import Decimal
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-from execution.exchange_interface import ExchangeInterface
-from exchanges.exchange_manager import ExchangeManager
-from risk.manager import RiskManager
-from database.queries import DatabaseQueries
-from utils.error_handler import ExchangeError
-
+from src.execution.exchange_interface import ExchangeInterface
+from src.exchanges.exchange_manager import ExchangeManager
+from src.risk.manager import RiskManager
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import ExchangeError
 
 @pytest.fixture
 def mock_exchange_manager():
