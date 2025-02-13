@@ -9,7 +9,7 @@ import aiosqlite
 
 from database.database import execute_sql
 
-from .connection import DBConnection, DatabaseConnection
+from .connection import DatabaseConnection
 from utils.error_handler import DatabaseError, handle_error_async
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import DatabaseError
@@ -65,7 +65,7 @@ class DatabaseQueries:
         self.db_path = db_path
         self.logger = logger or logging.getLogger(__name__)
         self.nh = NumericHandler()
-        self.db_connection = DBConnection(db_path)
+        self.db_connection = DatabaseConnection(db_path)
         self._lock = asyncio.Lock()
         self.query_builder = QueryBuilder()
     

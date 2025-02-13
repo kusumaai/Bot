@@ -2,12 +2,33 @@ import logging
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+import asyncio
 
 from trading.ratchet import RatchetManager
 from execution.exchange_interface import ExchangeInterface
 from risk.limits import RiskLimits
 from database.queries import DatabaseQueries
-from utils.error_handler import RatchetError
+from utils.exceptions import RatchetError
+
+
+@pytest.fixture
+def risk_limits():
+    """Provide test risk limits."""
+    return RiskLimits.from_config({
+        'max_position_size': '0.1',
+        'min_position_size': '0.01',
+        'max_positions': 3,
+        'max_leverage': '2.0',
+        'max_drawdown': '0.1',
+        'max_daily_loss': '0.03',
+        'emergency_stop_pct': '3.0',
+        'risk_factor': '0.01',
+        'kelly_scaling': '0.5',
+        'max_correlation': '0.7',
+        'max_sector_exposure': '0.3',
+        'max_volatility': '0.05',
+        'min_liquidity': '100000'
+    })
 
 
 @pytest.fixture
@@ -20,8 +41,10 @@ def mock_exchange_interface():
 
 @pytest.fixture
 def db_queries():
-    """Provide a mocked DatabaseQueries instance."""
-    return AsyncMock(spec=DatabaseQueries)
+    """Provide a mocked DatabaseQueries."""
+    mock_db = AsyncMock(spec=DatabaseQueries)
+    mock_db.log_trade = AsyncMock()
+    return mock_db
 
 
 @pytest.fixture
@@ -31,24 +54,34 @@ def logger():
 
 
 @pytest.fixture
-def risk_limits():
-    """Provide test risk limits."""
-    return RiskLimits.from_config({
-        'ratchet_threshold': '0.05',  # 5% adjustment
-        'max_ratchet_steps': '3',
-        'ratchet_step_size': '0.02'  # 2% per step
-    })
-
-
-@pytest.fixture
 def ratchet_manager(mock_exchange_interface, db_queries, risk_limits, logger):
     """Provide a RatchetManager instance."""
-    return RatchetManager(
-        exchange_interface=mock_exchange_interface,
-        db_queries=db_queries,
-        risk_limits=risk_limits,
-        logger=logger
-    )
+    ctx = MagicMock()
+    ctx.exchange_interface = mock_exchange_interface
+    ctx.db_queries = db_queries
+    ctx.risk_manager.risk_limits = risk_limits
+    ctx.logger = logger
+    ratchet_mgr = RatchetManager(ctx)
+    asyncio.run(ratchet_mgr.initialize())
+    return ratchet_mgr
+
+
+@pytest.mark.asyncio
+async def test_ratchet_initialize_trade(ratchet_manager):
+    """Test initializing a trade in RatchetManager."""
+    trade_id = "trade123"
+    entry_price = 50000.0
+    take_profit = 51000.0
+    stop_loss = 49000.0
+    
+    await ratchet_manager.initialize_trade(trade_id, entry_price, take_profit, stop_loss)
+    
+    assert trade_id in ratchet_manager.trades
+    trade = ratchet_manager.trades[trade_id]
+    assert trade['entry_price'] == entry_price
+    assert trade['take_profit'] == take_profit
+    assert trade['stop_loss'] == stop_loss
+    assert trade['current_level'] == 0
 
 
 @pytest.mark.asyncio

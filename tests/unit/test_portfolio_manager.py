@@ -2,8 +2,10 @@ import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock
 import logging
+import asyncio
+import time
 
-from risk.portfolio import PortfolioManager
+from trading.portfolio import PortfolioManager
 from trading.position import Position
 from utils.error_handler import PortfolioError
 from risk.limits import RiskLimits
@@ -14,63 +16,80 @@ def risk_limits():
     """Provide test risk limits."""
     return RiskLimits.from_config({
         'max_positions': 5,
-        'max_position_size': Decimal('0.5'),
-        'max_leverage': Decimal('3.0')
+        'max_position_size': '0.5',
+        'max_leverage': '3.0'
     })
 
 
 @pytest.fixture
-def logger():
+def mock_logger():
     """Provide a mocked logger."""
     return MagicMock(spec=logging.Logger)
 
 
 @pytest.fixture
-def portfolio_manager(risk_limits, logger):
-    """Provide a PortfolioManager instance."""
-    return PortfolioManager(risk_limits, logger)
+def portfolio_manager(risk_limits, mock_logger):
+    """Provide a PortfolioManager instance with mocked dependencies."""
+    ctx = MagicMock()
+    ctx.logger = mock_logger
+    ctx.config = {
+        "portfolio": {
+            "initial_balance": "10000"
+        }
+    }
+    ctx.risk_limits = risk_limits
+    portfolio_mgr = PortfolioManager(ctx)
+    asyncio.run(portfolio_mgr.initialize())
+    return portfolio_mgr
 
 
-def test_add_position_success(portfolio_manager):
-    """Test successful addition of a position."""
+@pytest.mark.asyncio
+async def test_portfolio_initialization(portfolio_manager):
+    """Test initializing the PortfolioManager."""
+    assert portfolio_manager.initialized is True
+    assert portfolio_manager.current_balance == Decimal('10000')
+
+
+@pytest.mark.asyncio
+async def test_add_position_within_limits(portfolio_manager):
+    """Test adding a position within risk limits."""
     position = Position(
-        id='pos001',
         symbol='BTC/USDT',
-        direction='long',
+        side='buy',
+        entry_price=Decimal('50000'),
         size=Decimal('0.1'),
-        entry_price=Decimal('50000')
+        timestamp=int(time.time())
     )
-    result = portfolio_manager.add_position(position)
+    result = await portfolio_manager.add_position(position)
     assert result is True
     assert len(portfolio_manager.positions) == 1
 
 
-def test_add_position_exceeds_max_positions(portfolio_manager):
-    """Test adding a position exceeding the maximum allowed positions."""
-    for i in range(portfolio_manager.risk_limits.max_positions):
+@pytest.mark.asyncio
+async def test_add_position_exceeds_max_positions(portfolio_manager):
+    """Test adding a position that exceeds the maximum number of positions."""
+    for i in range(5):
         position = Position(
-            id=f'pos00{i}',
-            symbol='ETH/USDT',
-            direction='short',
+            symbol=f'BTC/USDT-{i}',
+            side='buy',
+            entry_price=Decimal('50000'),
             size=Decimal('0.1'),
-            entry_price=Decimal('3000')
+            timestamp=int(time.time())
         )
-        result = portfolio_manager.add_position(position)
+        result = await portfolio_manager.add_position(position)
         assert result is True
-
-    # Attempt to add one more position
-    extra_position = Position(
-        id='pos006',
-        symbol='SOL/USDT',
-        direction='long',
+    
+    # Attempt to add a sixth position
+    position = Position(
+        symbol='BTC/USDT-5',
+        side='buy',
+        entry_price=Decimal('50000'),
         size=Decimal('0.1'),
-        entry_price=Decimal('100')
+        timestamp=int(time.time())
     )
-    result = portfolio_manager.add_position(extra_position)
+    result = await portfolio_manager.add_position(position)
     assert result is False
-    portfolio_manager.logger.warning.assert_called_with(
-        "Cannot add position pos006: Maximum positions reached."
-    )
+    assert portfolio_manager.logger.error.called
 
 
 def test_add_position_exceeds_max_size(portfolio_manager):

@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Optional
+from typing import Optional, Dict, Any
 import asyncio
 import logging
 
@@ -20,32 +20,33 @@ class Position:
     unrealized_pnl: Decimal = Decimal('0')
     realized_pnl: Decimal = Decimal('0')
     closed: bool = False
-
+    stop_loss: Optional[Decimal] = None
+    take_profit: Optional[Decimal] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
     def __post_init__(self):
+        self._lock = asyncio.Lock()
         if self.entry_price <= Decimal('0') or self.size <= Decimal('0'):
             raise ValueError("Entry price and size must be positive.")
 
     async def update(self, current_price: Decimal) -> None:
-        async with asyncio.Lock():
+        async with self._lock:
             try:
                 if current_price <= Decimal('0'):
                     raise PositionUpdateError("Current price must be positive.")
 
-                old_price = self.current_price
                 self.current_price = current_price
-                self.unrealized_pnl = self.size * (self.current_price - self.entry_price)
+                self.unrealized_pnl = self.size * (self.current_price - self.entry_price) if self.side.lower() == 'buy' else self.size * (self.entry_price - self.current_price)
+                
                 # Additional update logic as needed
 
             except InvalidOperation as e:
                 logging.getLogger(__name__).error(f"Invalid operation during position update: {e}")
-                raise PositionUpdateError(f"Invalid operation: {e}")
+                raise PositionUpdateError(f"Invalid operation: {e}") from e
             except Exception as e:
                 logging.getLogger(__name__).error(f"Unexpected error during position update: {e}")
-                raise PositionUpdateError(f"Unexpected error: {e}")
-
-    def update_market_data(self, current_price: Decimal):
-        self.current_price = current_price
-        self.unrealized_pnl = (self.current_price - self.entry_price) * self.size if self.side.lower() == 'buy' else (self.entry_price - self.current_price) * self.size
+                raise PositionUpdateError(f"Unexpected error: {e}") from e
 
     def close_position(self, realized_pnl: Decimal):
-        self.realized_pnl += realized_pnl 
+        self.realized_pnl += realized_pnl
+        self.closed = True 

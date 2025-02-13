@@ -144,3 +144,30 @@ def calculate_position_size(
     except Exception as e:
         handle_error(e, "math.calculate_position_size")
         return Decimal("0")
+
+class MathHandler:
+    def calculate_expected_value(self, probability: Decimal, win_amount: Decimal, loss_amount: Decimal) -> Decimal:
+        try:
+            return (win_amount - loss_amount) * probability - loss_amount * (Decimal('1') - probability)
+        except (InvalidOperation, Exception) as e:
+            raise MathError(f"Error calculating expected value: {e}")
+
+    def calculate_kelly_fraction(self, win_amount: Decimal, loss_amount: Decimal) -> Decimal:
+        try:
+            if win_amount <= Decimal("0") or loss_amount >= Decimal("0"):
+                return Decimal("0")
+            ratio = abs(loss_amount / win_amount)
+            kelly = win_amount - ((Decimal("1") - win_amount) * ratio)  
+            return max(Decimal("0"), min(kelly, Decimal("1")))
+        except (InvalidOperation, Exception) as e:
+            raise MathError(f"Error calculating Kelly fraction: {e}")
+
+    def calculate_position_size(self, account_balance: Decimal, kelly_fraction: Decimal, current_price: Decimal, volatility: Decimal) -> Decimal:
+        try:
+            if volatility <= Decimal("0") or current_price <= Decimal("0"):
+                return Decimal("0")
+            base_size = (account_balance * Decimal("0.1")) / (current_price * volatility)
+            return base_size * kelly_fraction
+        except (InvalidOperation, Exception) as e:
+            raise MathError(f"Error calculating position size: {e}")           
+        

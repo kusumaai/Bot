@@ -50,42 +50,8 @@ async def get_exchange_instance(eid: str, ctx: Any) -> ExchangeManager:
     if cached:
         return cached
 
-    exchange_cfg = ctx.config.get("exchange_settings", {})
-    default_timeout = exchange_cfg.get("timeout", 30000)
-    default_enable_rate_limit = exchange_cfg.get("enableRateLimit", True)
-    
-    ex_args = {
-        "enableRateLimit": default_enable_rate_limit,
-        "timeout": default_timeout
-    }
-
-    # Set credentials based on environment variables or configuration
-    eid_lower = eid.lower()
-    credentials = {
-        "kucoin": {
-            "apiKey": ctx.config.get("kucoin_api_key"),
-            "secret": ctx.config.get("kucoin_secret"),
-            "password": ctx.config.get("kucoin_password")
-        },
-        "bybit": {
-            "apiKey": ctx.config.get("bybit_api_key"),
-            "secret": ctx.config.get("bybit_secret")
-        }
-        # Add other exchanges as needed
-    }
-
-    exchange_credentials = credentials.get(eid_lower, {})
-    if exchange_credentials:
-        ex_args.update(exchange_credentials)
-    
     try:
-        exchange_instance = ExchangeManager(
-            exchange_id=eid_lower,
-            api_key=exchange_credentials.get("apiKey"),
-            api_secret=exchange_credentials.get("secret"),
-            sandbox=ctx.config.get("sandbox", True),
-            logger=ctx.logger
-        )
+        exchange_instance = ExchangeManager(ctx)
         await exchange_instance.initialize()
         _exchange_cache.set(eid, exchange_instance)
         return exchange_instance

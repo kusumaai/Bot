@@ -37,4 +37,16 @@ class RateLimiter:
         if key in self.rate_limits:
             await self.rate_limits[key].acquire()
         else:
-            raise ValueError(f"Rate limit key '{key}' not defined.") 
+            raise ValueError(f"Rate limit key '{key}' not defined.")
+
+class RateLimitConfig:
+    def __init__(self, max_requests: int, time_window: float):
+        """
+        Initialize rate limit configuration
+        
+        Args:
+            max_requests (int): Maximum number of requests allowed in the time window
+            time_window (float): Time window in seconds
+        """
+        self.max_requests = max_requests
+        self.time_window = time_window 

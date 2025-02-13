@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from utils.error_handler import init_error_handler
-from database.database import DBConnection
+from database.connection import DatabaseConnection
 from config.risk_config import RiskConfig
 from utils.logger import setup_logging
 
@@ -25,7 +25,7 @@ class SystemInitializer:
             db_path = self.ctx.config.get("database", {}).get("path", "data/trading.db")
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             
-            self.db_connection = DBConnection(db_path)
+            self.db_connection = DatabaseConnection(db_path)
             init_error_handler(db_path)
             
             # Load risk configuration

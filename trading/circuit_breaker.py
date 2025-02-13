@@ -13,6 +13,7 @@ import time
 from utils.error_handler import handle_error_async
 from bot_types.base_types import RiskLimits
 from utils.numeric_handler import NumericHandler
+from utils.exceptions import CircuitBreakerError
 
 class CircuitBreaker:
     def __init__(self, ctx: Any):
@@ -23,9 +24,11 @@ class CircuitBreaker:
         self.last_check = time.time()
         self._monitor_task: Optional[asyncio.Task] = None
         self.nh = NumericHandler()
+        self._lock = asyncio.Lock()
+        self.emergency_triggered = False
 
     async def initialize(self) -> bool:
-        """Initialize circuit breaker"""
+        """Initialize circuit breaker components."""
         try:
             if self.initialized:
                 return True
@@ -35,9 +38,10 @@ class CircuitBreaker:
             self.risk_limits = self.ctx.portfolio_manager.risk_limits
             self._monitor_task = asyncio.create_task(self.monitor_loop())
             self.initialized = True
+            self.logger.info("CircuitBreaker initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize circuit breaker: {e}")
+            await handle_error_async(e, "CircuitBreaker.initialize", self.logger)
             return False
 
     async def monitor_loop(self):
@@ -130,3 +134,25 @@ class CircuitBreaker:
         except Exception as e:
             await handle_error_async(e, "CircuitBreaker._calculate_daily_loss", self.logger)
             return Decimal('0')
+
+    async def check_emergency_stop(self):
+        """Check if emergency stop conditions are met."""
+        async with self._lock:
+            try:
+                portfolio = self.ctx.portfolio_manager
+                if portfolio.current_drawdown >= self.ctx.risk_manager.risk_limits["emergency_stop_pct"]:
+                    self.emergency_triggered = True
+                    self.logger.warning("Emergency stop triggered due to drawdown.")
+                    # Add logic to halt trading, close positions, etc.
+            except Exception as e:
+                await handle_error_async(e, "CircuitBreaker.check_emergency_stop", self.logger)
+
+    async def _check_exchange(self) -> bool:
+        """Verify exchange connectivity"""
+        try:
+            start_time = time.time()
+            await self.ctx.exchange_interface.exchange.ping()  # This is correct, using the new structure
+            return True
+        except Exception as e:
+            await handle_error_async(e, "CircuitBreaker._check_exchange", self.logger)
+            return False

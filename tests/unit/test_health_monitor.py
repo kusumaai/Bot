@@ -1,7 +1,7 @@
 import pytest
 from decimal import Decimal
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from utils.health_monitor import HealthMonitor
 from database.queries import DatabaseQueries

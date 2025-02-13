@@ -8,6 +8,7 @@ from data.candles import CandleManager, calculate_atr, CandleProcessor
 from utils.error_handler import ValidationError
 from database.database import DatabaseConnection
 from utils.logger import setup_logging
+from signals.ml_signals import MLSignal
 
 
 @pytest.fixture

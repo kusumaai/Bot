@@ -21,6 +21,7 @@ from trading.math import (
     calculate_kelly_fraction,
     predict_next_return
 )
+from utils.exceptions import InvalidOrderError
 
 @dataclass
 class GeneticRule(Validatable):
@@ -68,6 +69,24 @@ class GeneticRule(Validatable):
                 is_valid=False,
                 error_message=f"Genetic rule validation failed: {str(e)}"
             )
+
+@dataclass
+class GASignal:
+    symbol: str
+    action: str
+    price: Decimal
+    quantity: Decimal
+
+def generate_ga_signals(data: dict) -> GASignal:
+    action = data.get("action")
+    if action not in ["buy", "sell"]:
+        raise InvalidOrderError(f"Invalid action: {action}")
+    return GASignal(
+        symbol=data["symbol"],
+        action=action,
+        price=Decimal(data["price"]),
+        quantity=Decimal(data["quantity"])
+    )
 
 def generate_ga_signals(market_data: pd.DataFrame, population: List[GeneticRule]) -> List[Dict[str, Any]]:
     """Generate trading signals using genetic algorithm rules"""

@@ -1,11 +1,14 @@
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 from decimal import Decimal
 import logging
 
-from risk.manager import RiskManager
+from risk.manager import RiskManager, PositionInfo
 from risk.limits import RiskLimits
 from database.queries import DatabaseQueries
+
+
 from utils.error_handler import RiskError
 
 
@@ -19,7 +22,7 @@ def risk_limits():
         'max_leverage': '2.0',
         'max_drawdown': '0.1',
         'max_daily_loss': '0.03',
-        'emergency_stop_pct': '-3.0',
+        'emergency_stop_pct': '3.0',
         'risk_factor': '0.01',
         'kelly_scaling': '0.5',
         'max_correlation': '0.7',
@@ -124,7 +127,84 @@ async def test_emergency_stop_triggered(risk_limits, db_queries, logger):
     rm = RiskManager(risk_limits, db_queries, logger)
     
     # Simulate emergency drawdown
-    rm.current_drawdown = Decimal('-3.5')  # Beyond emergency_stop_pct
+    rm.current_drawdown = Decimal('3.5')  # Beyond emergency_stop_pct
     
     with pytest.raises(RiskError, match="Emergency stop triggered"):
         await rm.validate_risk_metrics() 
+
+
+@pytest.fixture
+def mock_portfolio_manager():
+    """Provide a mocked PortfolioManager."""
+    mock_portfolio = MagicMock(spec=PortfolioManager)
+    mock_portfolio.get_total_positions.return_value = 2
+    mock_portfolio.current_drawdown = Decimal('0.05')
+    return mock_portfolio
+
+
+@pytest.fixture
+def risk_manager(risk_limits, mock_portfolio_manager, logger):
+    """Provide a RiskManager instance with mocked dependencies."""
+    ctx = MagicMock()
+    ctx.logger = logger
+    ctx.portfolio_manager = mock_portfolio_manager
+    ctx.config = {
+        "position_limits": {
+            "max_position_size": "0.1",
+            "min_position_size": "0.01",
+            "max_positions": 3,
+            "max_leverage": "2.0",
+            "max_drawdown": "0.1",
+            "max_daily_loss": "0.03",
+            "emergency_stop_pct": "3.0",
+            "risk_factor": "0.01",
+            "kelly_scaling": "0.5",
+            "max_correlation": "0.7",
+            "max_sector_exposure": "0.3",
+            "max_volatility": "0.05",
+            "min_liquidity": "100000"
+        }
+    }
+    risk_mgr = RiskManager(ctx)
+    asyncio.run(risk_mgr.initialize())
+    return risk_mgr
+
+
+@pytest.mark.asyncio
+async def test_validate_trade_within_limits(risk_manager):
+    """Test validating a trade within risk limits."""
+    is_valid, error = await risk_manager.validate_trade(
+        symbol='BTC/USDT',
+        side='buy',
+        amount=Decimal('0.05'),
+        price=Decimal('50000')
+    )
+    assert is_valid is True
+    assert error is None
+
+
+@pytest.mark.asyncio
+async def test_validate_trade_below_min_size(risk_manager):
+    """Test validating a trade below minimum position size."""
+    is_valid, error = await risk_manager.validate_trade(
+        symbol='BTC/USDT',
+        side='buy',
+        amount=Decimal('0.005'),
+        price=Decimal('50000')
+    )
+    assert is_valid is False
+    assert error == "Trade amount below minimum position size."
+
+
+@pytest.mark.asyncio
+async def test_validate_trade_exceeds_max_positions(risk_manager, mock_portfolio_manager):
+    """Test validating a trade that exceeds the maximum number of positions."""
+    mock_portfolio_manager.get_total_positions.return_value = 3
+    is_valid, error = await risk_manager.validate_trade(
+        symbol='ETH/USDT',
+        side='sell',
+        amount=Decimal('0.05'),
+        price=Decimal('3000')
+    )
+    assert is_valid is False
+    assert error == "Maximum number of positions reached." 

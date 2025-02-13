@@ -7,59 +7,40 @@ import time
 from trading.exceptions import ExchangeAPIError
 
 class PaperExchange:
-    def __init__(self, api_key: Optional[str], api_secret: Optional[str]):
-        self.logger = logging.getLogger(__name__)
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.orders: Dict[str, Dict[str, Any]] = {}
-        self.logger.info("Initialized PaperExchange")
-
-    async def create_order(self, symbol: str, side: str, amount: float, price: Optional[float] = None) -> Optional[Dict[str, Any]]:
-        order_id = f"paper_{int(time.time())}"
+    def __init__(self):
+        self.positions = {}
+        self.balances = {"USDT": 10000}  # Default paper balance
+        self.orders = {}
+        
+    async def create_order(self, symbol: str, type: str, side: str, amount: float, price: float = None):
+        order_id = str(len(self.orders) + 1)
         order = {
-            'id': order_id,
-            'symbol': symbol,
-            'side': side,
-            'amount': str(Decimal(amount)),
-            'price': str(Decimal(price)) if price else None,
-            'status': 'OPEN',
-            'timestamp': int(time.time() * 1000)
+            "id": order_id,
+            "symbol": symbol,
+            "type": type,
+            "side": side,
+            "amount": amount,
+            "price": price,
+            "status": "closed"
         }
         self.orders[order_id] = order
-        self.logger.info(f"Paper order created: {order}")
         return order
+
+    async def fetch_balance(self):
+        return self.balances
+
+    async def fetch_positions(self):
+        return list(self.positions.values())
 
     async def close_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         order = self.orders.pop(order_id, None)
         if order:
             order['status'] = 'CLOSED'
-            self.logger.info(f"Paper order closed: {order}")
             return order
-        self.logger.warning(f"Paper order {order_id} not found.")
         return None
 
     async def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
-        order = self.orders.get(order_id)
-        if order:
-            return order
-        self.logger.warning(f"Paper order {order_id} not found.")
-        return None
-
-    async def fetch_balance(self) -> Dict[str, Any]:
-        # Simulate fetching balance
-        balance = {
-            'total': {
-                'USDT': Decimal('10000.0')
-            },
-            'free': {
-                'USDT': Decimal('10000.0')
-            },
-            'used': {
-                'USDT': Decimal('0.0')
-            },
-            'info': {}
-        }
-        return balance
+        return self.orders.get(order_id)
 
     async def fetch_markets(self) -> Dict[str, Any]:
         # Simulate fetching markets
@@ -105,5 +86,5 @@ class PaperExchange:
         return True
 
     async def close(self):
-        # Cleanup if necessary
-        self.logger.info("PaperExchange connection closed.") 
+        pass;
+    

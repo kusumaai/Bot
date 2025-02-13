@@ -9,14 +9,16 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-def setup_logging(name: str = "TradingBot", level: str = "INFO") -> logging.Logger:
-    """Setup logging configuration"""
+def setup_logging(name: str) -> logging.Logger:
+    """
+    Unified logging setup
+    """
     # Create logger
     logger = logging.getLogger(name)
     
     # Only add handlers if they don't exist
     if not logger.handlers:
-        logger.setLevel(getattr(logging, level))
+        logger.setLevel(logging.INFO)
         
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
@@ -39,3 +41,8 @@ def setup_logging(name: str = "TradingBot", level: str = "INFO") -> logging.Logg
         logger.addHandler(file_handler)
     
     return logger
+
+def get_logger(name: str = None) -> logging.Logger:
+    if name:
+        return logging.getLogger(name)
+    return logging.getLogger()

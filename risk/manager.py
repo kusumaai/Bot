@@ -15,10 +15,20 @@ from datetime import datetime
 from utils.error_handler import handle_error, handle_error_async
 from trading.position import Position
 from .limits import RiskLimits
-from .portfolio import PortfolioManager
+from ..trading.portfolio import PortfolioManager
 from .validation import MarketDataValidation
 from utils.exceptions import RiskManagerError
 from utils.numeric import NumericHandler
+
+@dataclass
+class PositionInfo:
+    """Position information data class"""
+    symbol: str
+    size: Decimal
+    entry_price: Decimal
+    current_price: Decimal
+    unrealized_pnl: Decimal
+    leverage: Decimal = Decimal('1.0')
 
 class RiskManager:
     def __init__(self, ctx: Any):

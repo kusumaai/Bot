@@ -5,6 +5,7 @@ import logging
 import asyncio
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 
 from utils.error_handler import DatabaseError, ErrorHandler
 
@@ -18,37 +19,70 @@ class DatabaseConnection:
         self.pool = None
         self._lock = asyncio.Lock()
         self.logger = logging.getLogger(__name__)
+        self.connection = None
         
     async def initialize(self) -> bool:
-        """Initialize the database connection pool"""
+        """Initialize the database connection"""
         try:
-            import aiosqlite
-            self.pool = await aiosqlite.connect(self.db_path)
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to initialize database connection: {e}")
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("PRAGMA foreign_keys = ON;")
+                # Test connection
+                await conn.execute("SELECT 1")
+                self.logger.info("Database connection initialized successfully")
+                return True
+        except aiosqlite.Error as e:
+            self.logger.error(f"Database initialization error: {e}")
             return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error during database initialization: {e}")
+            return False
+
+    @asynccontextmanager
+    async def get_connection(self):
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("PRAGMA foreign_keys = ON;")
+                yield conn
+        except aiosqlite.Error as e:
+            self.logger.error(f"Database connection error: {e}")
+            raise DatabaseError(f"Database connection error: {e}") from e
 
     async def execute_sql(self, query: str, params: List[Any] = None) -> Any:
         """Execute a SQL query with proper error handling"""
-        if not self.pool:
-            raise DatabaseError("Database connection not initialized")
-            
-        async with self._lock:
-            try:
-                async with self.pool.execute(query, params or []) as cursor:
+        try:
+            async with self.get_connection() as conn:
+                async with conn.execute(query, params or []) as cursor:
                     result = await cursor.fetchall()
-                    await self.pool.commit()
+                    await conn.commit()
                     return result
-            except Exception as e:
-                await self.pool.rollback()
-                raise DatabaseError(f"Query execution failed: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Failed to execute SQL: {str(e)}")
+            raise DatabaseError(f"Database query failed: {str(e)}") from e
+
+    def _create_tables(self):
+        """Create necessary database tables if they don't exist"""
+        with self.connection:
+            cursor = self.connection.cursor()
+            
+            # Add your table creation SQL statements here
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    status TEXT NOT NULL
+                )
+            ''')
+            # Add more table creation statements as needed
 
     async def close(self):
         """Close the database connection"""
-        if self.pool:
-            await self.pool.close()
-            self.pool = None
+        if self.connection:
+            await self.connection.close()
+            self.connection = None
 
     async def execute(
         self,

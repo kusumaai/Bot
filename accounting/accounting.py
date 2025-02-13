@@ -6,7 +6,7 @@ Module: accounting/accounting.py
 from typing import Any, List, Dict, Optional
 from decimal import Decimal
 from utils.error_handler import handle_error, handle_error_async
-from database.database import DBConnection, execute_sql, execute_sql_one
+from database.database import DatabaseConnection, execute_sql, execute_sql_one
 from utils.exceptions import DatabaseError
 import asyncio
 import time
@@ -16,7 +16,7 @@ def validate_account(signal: Dict[str, Any], ctx: Any) -> bool:
     """Validate if account has sufficient free balance."""
     try:
         min_free_balance = ctx.config.get("min_free_balance_threshold", 0.001)
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             row = execute_sql_one(
                 conn,
                 "SELECT balance, used_balance FROM account WHERE exchange = ?",
@@ -37,7 +37,7 @@ def validate_account(signal: Dict[str, Any], ctx: Any) -> bool:
 def get_free_balance(exchange: str, ctx: Any) -> Decimal:
     """Get available balance for trading."""
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             is_paper = ctx.config.get("paper_mode", False)
             sql = """
                 SELECT 
@@ -71,7 +71,7 @@ def record_new_trade(
 ) -> bool:
     """Record a new trade and update account balance."""
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             conn.execute("BEGIN TRANSACTION")
             try:
                 # Insert trade record
@@ -145,7 +145,7 @@ def update_trade_result(trade_id: str, net_pnl: float, ctx: Any) -> bool:
 
 def update_trade_stop(trade_id: str, new_sl: float, ctx: Any) -> None:
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             sql = "UPDATE trades SET sl = ? WHERE id = ?"
             execute_sql(conn, sql, [new_sl, trade_id])
     except Exception as e:
@@ -154,7 +154,7 @@ def update_trade_stop(trade_id: str, new_sl: float, ctx: Any) -> None:
 
 def fetch_open_trades(ctx: Any) -> List[Dict[str, Any]]:
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             sql = (
                 "SELECT * FROM trades "
                 "WHERE close_reason IS NULL OR close_reason != 'closed' "
@@ -169,7 +169,7 @@ def fetch_open_trades(ctx: Any) -> List[Dict[str, Any]]:
 
 def update_daily_performance(ctx: Any) -> None:
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             sql = (
                 "INSERT OR REPLACE INTO bot_performance ("
                 "   day, real_trades_closed, paper_trades_closed, real_pnl, paper_pnl"
@@ -196,7 +196,7 @@ def update_daily_performance(ctx: Any) -> None:
 def log_performance_summary(ctx: Any) -> None:
     """Log daily performance summary with better formatting"""
     try:
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             sql = "SELECT * FROM bot_performance ORDER BY day DESC LIMIT 1"
             summary = execute_sql_one(conn, sql, [])
             if summary:

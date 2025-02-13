@@ -1,5 +1,7 @@
+import asyncio
+from decimal import Decimal
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from execution.main_loop import MainLoop
 from execution.exchange_interface import ExchangeInterface
 from risk.manager import RiskManager
@@ -28,7 +30,7 @@ def db_queries():
 @pytest.fixture
 def logger():
     """Provide a mocked logger."""
-    return MagicMock(spec=logging.Logger)
+    return MagicMock(spec=logger.Logger)
 
 
 @pytest.fixture

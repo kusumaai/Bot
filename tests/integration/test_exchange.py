@@ -4,9 +4,9 @@ import logging
 from datetime import datetime, timedelta
 import os
 from typing import Dict, Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
-from exchanges.exchange_manager import ExchangeManager, RateLimiter
+from exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
 from execution.exchange_interface import ExchangeInterface
 from utils.error_handler import ExchangeError
 from risk.manager import RiskManager
@@ -25,29 +25,59 @@ def exchange_credentials():
 
 
 @pytest.fixture
-async def exchange_manager_fixture(exchange_credentials, logger, db_queries):
-    """Provide a configured ExchangeManager fixture."""
+def mock_rate_limiter():
+    """Provide a mocked RateLimiter."""
+    return RateLimiter({
+        'market': RateLimitConfig(20, 60),
+        'trade': RateLimitConfig(10, 60),
+        'order': RateLimitConfig(50, 60),
+        'position': RateLimitConfig(10, 60)
+    })
+
+
+@pytest.fixture
+def mock_exchange_manager(exchange_credentials, mock_rate_limiter, logger):
+    """Provide a mocked ExchangeManager."""
     manager = ExchangeManager(
         exchange_id=exchange_credentials['exchange_id'],
         api_key=exchange_credentials['api_key'],
         api_secret=exchange_credentials['api_secret'],
-        logger=logger,
-        db_queries=db_queries
+        sandbox=True,
+        logger=logger
     )
     manager.exchange = AsyncMock()
-    yield manager
-    await manager.close()
+    return manager
 
 
 @pytest.fixture
-async def exchange_interface_fixture(exchange_manager_fixture, risk_manager, db_queries, logger):
+async def exchange_interface_fixture(mock_exchange_manager, risk_manager, db_queries, logger):
     """Provide a configured ExchangeInterface fixture."""
-    return ExchangeInterface(
-        exchange_manager=exchange_manager_fixture,
+    ctx = MagicMock(
+        logger=logger,
+        config={
+            "exchange_id": "binance",
+            "api_key": "test_api_key",
+            "api_secret": "test_api_secret",
+            "paper_mode": True,
+            "database": {"path": "data/test_trading.db"},
+            "initial_balance": "10000"
+        },
         risk_manager=risk_manager,
-        db_queries=db_queries,
-        logger=logger
+        db_queries=db_queries
     )
+    
+    exchange_interface = ExchangeInterface(ctx)
+    with patch.object(exchange_interface.exchange_manager, 'initialize', AsyncMock(return_value=True)):
+        with patch.object(exchange_interface.exchange_manager.exchange, 'create_order', AsyncMock(return_value={
+            'id': 'order_test',
+            'symbol': 'BTC/USDT',
+            'status': 'open',
+            'price': '50000',
+            'amount': '0.1'
+        })):
+            initialized = await exchange_interface.initialize()
+            assert initialized
+    return exchange_interface
 
 
 @pytest.mark.integration

@@ -9,20 +9,21 @@ import sys
 import time
 import sqlite3
 import ccxt.async_support as ccxt
-import logging
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import numpy as np
 import asyncio
+import logging
 
-from utils.logger import setup_logger
+from utils.logger import setup_logging
 from utils.error_handler import handle_error, ValidationError
 from database.queries import DatabaseQueries
+from database.database import DatabaseConnection
 
 # Initialize logger at module level
-logger = setup_logger(name="CandleManager", level="INFO")
+logger = setup_logging(name="CandleManager")
 
 def get_stable_coin_markets(exchange: ccxt.Exchange, base_coins: List[str], 
                            stable_coins: List[str]) -> List[str]:
@@ -122,6 +123,28 @@ class CandleProcessor:
         except Exception as e:
             self.logger.error(f"Failed to process candles for {symbol}: {e}")
             raise ValidationError(f"Failed to process candles for {symbol}: {e}") from e
+
+class CandleManager:
+    def __init__(self, db_connection: DatabaseConnection, logger: logging.Logger):
+        self.db = db_connection
+        self.logger = logger
+        self.processor = CandleProcessor(self.db, self.logger)
+
+    async def fetch_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 100
+    ) -> pd.DataFrame:
+        """Fetch and process candles from database"""
+        try:
+            raw_candles = await self.db.fetch_candles(symbol, timeframe, limit)
+            if raw_candles:
+                return await self.processor.process_candles(symbol, timeframe, raw_candles)
+            return pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"Failed to fetch candles for {symbol}: {e}")
+            return pd.DataFrame()
 
 async def main():
     try:

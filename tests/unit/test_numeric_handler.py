@@ -25,4 +25,16 @@ def test_to_decimal_invalid_values(numeric_handler, caplog):
         assert "Failed to convert value to Decimal: invalid - [<class 'decimal.ConversionSyntax'>]" in caplog.text
         
         assert numeric_handler.to_decimal(None) is None
-        assert "Failed to convert value to Decimal: None - [<class 'decimal.ConversionSyntax'>]" in caplog.text 
+        assert "Failed to convert value to Decimal: None - [<class 'decimal.ConversionSyntax'>]" in caplog.text
+
+
+def test_numeric_rounding():
+    nh = NumericHandler()
+    result = nh.round_value(Decimal('3.14159'), 2)
+    assert result == Decimal('3.14')
+
+
+def test_numeric_conversion():
+    nh = NumericHandler()
+    result = nh.convert_to_decimal("123.456")
+    assert result == Decimal("123.456") 

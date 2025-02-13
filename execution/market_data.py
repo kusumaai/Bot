@@ -55,11 +55,17 @@ class MarketData:
         try:
             if self.initialized:
                 return True
-            self.validation = MarketDataValidation(self.ctx.risk_limits, self.logger)
+                
+            if not self.ctx.risk_manager or not hasattr(self.ctx.risk_manager, 'risk_limits'):
+                self.logger.error("Risk manager must be initialized first")
+                return False
+                
+            self.validation = MarketDataValidation(self.ctx.risk_manager.risk_limits, self.logger)
             self.initialized = True
+            self.logger.info("MarketData initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize market data: {e}")
+            await handle_error_async(e, "MarketData.initialize", self.logger)
             return False
 
     async def get_signals(self) -> List[Dict[str, Any]]:

@@ -161,3 +161,5 @@ cython_debug/
 #.idea/
 data/candles.db-shm
 data/candles.db-wal
+*.old
+*.backup

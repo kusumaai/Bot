@@ -91,91 +91,13 @@ def init_error_handler(db_path: str) -> None:
         logging.error(f"Failed to initialize error handler: {str(e)}")
         raise
 
-async def handle_error_async(
-    e: Exception,
-    location: str,
-    logger: Optional[logging.Logger] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    severity: int = 1
-) -> None:
-    """Handle async errors with proper logging, aggregation and persistence"""
-    try:
-        error_type = e.__class__.__name__
-        error_msg = f"Async error in {location}: {str(e)}"
-        
-        # Log error
-        if logger:
-            logger.error(error_msg, exc_info=True)
-        else:
-            logging.error(error_msg, exc_info=True)
-            
-        # Update error counts and history
-        _error_counts[error_type] += 1
-        
-        error_data = {
-            "timestamp": datetime.now().isoformat(),
-            "type": error_type,
-            "location": location,
-            "message": str(e),
-            "traceback": traceback.format_exc(),
-            "metadata": json.dumps(metadata) if metadata else None,
-            "severity": severity
-        }
-        
-        _last_errors[error_type].append(error_data)
-        if len(_last_errors[error_type]) > MAX_ERROR_HISTORY:
-            _last_errors[error_type].pop(0)
-            
-        # Store in database
-        if _db_pool:
-            async with db_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Insert error log
-                cursor.execute("""
-                    INSERT INTO error_log (
-                        timestamp, error_type, location, message,
-                        traceback, metadata, severity
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    error_data["timestamp"],
-                    error_type,
-                    location,
-                    str(e),
-                    error_data["traceback"],
-                    error_data["metadata"],
-                    severity
-                ))
-                
-                # Update aggregates
-                cursor.execute("""
-                    INSERT INTO error_aggregates (
-                        error_type, count, first_seen, last_seen, severity_sum
-                    ) VALUES (?, 1, ?, ?, ?)
-                    ON CONFLICT(error_type) DO UPDATE SET
-                        count = count + 1,
-                        last_seen = ?,
-                        severity_sum = severity_sum + ?
-                """, (
-                    error_type,
-                    error_data["timestamp"],
-                    error_data["timestamp"],
-                    severity,
-                    error_data["timestamp"],
-                    severity
-                ))
-                
-                conn.commit()
-        
-        # Check error thresholds
-        if _error_counts[error_type] >= _error_thresholds.get(error_type, float('inf')):
-            await handle_error_threshold_exceeded(error_type, location, logger)
-            
-    except Exception as handler_error:
-        if logger:
-            logger.error(f"Error handler failed: {str(handler_error)}", exc_info=True)
-        else:
-            logging.error(f"Error handler failed: {str(handler_error)}", exc_info=True)
+async def handle_error_async(error: Exception, context: str, logger: logging.Logger) -> None:
+    """Asynchronous error handler"""
+    error_msg = f"Error in {context}: {str(error)}"
+    if logger:
+        logger.error(error_msg, exc_info=True)
+    else:
+        print(error_msg)  # Fallback if logger isn't available
 
 async def handle_error_threshold_exceeded(
     error_type: str,
@@ -236,6 +158,10 @@ class DatabaseError(Exception):
     """Custom exception for database errors."""
     pass
 
+class RiskError(Exception):
+    """Custom exception for risk errors."""
+    pass
+
 class ModelError(ApplicationError):
     """ML model-related errors"""
     pass
@@ -247,7 +173,11 @@ class CircuitBreakerError(ApplicationError):
 class ValidationError(Exception):
     """Custom exception for validation errors."""
     pass
+class ExchangeError(Exception):
+    pass
 
+class OrderError(Exception):
+    pass
 class ErrorHandler:
     """Handles and logs errors consistently across the application."""
 

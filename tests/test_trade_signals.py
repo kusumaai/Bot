@@ -1,5 +1,5 @@
 import pytest
-from models.ga_signal import generate_ga_signals, GASignal
+from signals.ga_synergy import generate_ga_signals, GASignal
 from utils.exceptions import InvalidOrderError
 from decimal import Decimal
 from typing import Dict, Any

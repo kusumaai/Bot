@@ -5,16 +5,17 @@ Common helper functions for trading system
 """
 
 import numpy as np
-from typing import Any, List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Tuple
 from decimal import Decimal
 import pandas as pd
 from datetime import datetime, timedelta
 import json
 
-from database.database import DBConnection, execute_sql
+from database.connection import DatabaseConnection
+from database.database import execute_sql
 from utils.error_handler import handle_error
 
-def vol_estimate(symbol: str, ctx: Any) -> Decimal:
+async def vol_estimate(symbol: str, ctx: Any) -> Decimal:
     """
     Estimate the volatility for a given symbol using historical candle data.
 
@@ -27,9 +28,8 @@ def vol_estimate(symbol: str, ctx: Any) -> Decimal:
     """
     try:
         limit = ctx.config.get("vol_estimate_limit", 100)
-        with DBConnection(ctx.db_pool) as conn:
-            rows = execute_sql(
-                conn,
+        async with DatabaseConnection(ctx.db_pool) as conn:
+            rows = await conn.execute_sql(
                 """
                 SELECT close
                 FROM candles
@@ -76,7 +76,7 @@ def calculate_correlation(
     """
     try:
         lookback = datetime.now() - timedelta(hours=lookback_hours)
-        with DBConnection(ctx.db_pool) as conn:
+        with DatabaseConnection(ctx.db_pool) as conn:
             # Get prices for both symbols
             prices = {}
             for symbol in [symbol1, symbol2]:

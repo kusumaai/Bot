@@ -1,8 +1,6 @@
 import pytest
 from decimal import Decimal
-import logging
 from unittest.mock import AsyncMock, MagicMock
-
 from exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
 from utils.error_handler import ExchangeError, RateLimitExceeded
 from database.queries import DatabaseQueries

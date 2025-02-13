@@ -19,7 +19,7 @@ from signals.base_types import BaseSignal
 @dataclass
 class MLSignal(BaseSignal):
     """ML-specific signal extension"""
-    probability: Decimal
+    probability: Decimal = Decimal("0")
     confidence: float = 0.0
     expiry: Optional[datetime] = None
 

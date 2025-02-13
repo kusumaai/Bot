@@ -1,8 +1,8 @@
 import pytest
 from decimal import Decimal
 
-from models.ml_signal import generate_ml_signals
-from models.ga_signal import generate_ga_signals
+from signals.ga_synergy import generate_ga_signals
+from signals.ml_signals import generate_ml_signals
 from utils.error_handler import ValidationError
 
 

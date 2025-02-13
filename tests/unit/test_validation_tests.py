@@ -2,9 +2,9 @@ import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
-from validation_tests import (
+from tests.validation_tests import (
     test_store_trade_invalid_data,
-  # Assuming there are specific functions or classes to import
+  #  there are specific functions or classes to import
 )
 from utils.error_handler import DatabaseError
 from database.queries import DatabaseQueries

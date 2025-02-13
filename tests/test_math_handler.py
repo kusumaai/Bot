@@ -1,6 +1,6 @@
 from decimal import Decimal
 import pytest
-from trading.math_handler import MathHandler
+from trading.math import MathHandler
 from utils.exceptions import MathError
 
 @pytest.fixture

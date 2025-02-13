@@ -6,6 +6,9 @@ from utils.error_handler import handle_error_async
 from utils.exceptions import InvalidOrderError
 from signals.signal_utils import analyze_signal
 
+class MainLoop:  # Changed from main_loop function to MainLoop class
+    """Main trading loop orchestrator"""
+
 async def main_loop(ctx: Any):
     logger = ctx.logger
     while ctx.running:
