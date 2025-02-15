@@ -3,6 +3,8 @@ from src.utils.numeric_handler import NumericHandler
 from src.utils.exceptions import MathError
 from decimal import Decimal, InvalidOperation
 
+from trading.math import MathHandler
+
 @pytest.fixture
 def numeric_handler():
     return NumericHandler()

@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
+# src/signals/ml_signals.py
 """
-signals/ml_signals.py - Machine Learning Signal Generator
+Module: signals/ml_signals.py
+Machine Learning Signal Generator
 """
-
+#import required modules
 import logging
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
 import pandas as pd
 from datetime import datetime
 from dataclasses import dataclass, field
-
 from utils.logger import get_logger
 from utils.error_handler import handle_error_async
 from database.queries import DatabaseQueries
 from signals.trading_types import SignalMetadata
 from signals.base_types import BaseSignal
+from utils.exceptions import ValidationError
 
+#ML signal class that defines the ML signal for the machine learning signal generator
 @dataclass
 class MLSignal(BaseSignal):
     """ML-specific signal extension"""
@@ -23,6 +26,7 @@ class MLSignal(BaseSignal):
     confidence: float = 0.0
     expiry: Optional[datetime] = None
 
+#ML signal generator class that defines the ML signal generator for the machine learning signal generator   
 class MLSignalGenerator:
     def __init__(self, db_queries: DatabaseQueries, logger: Optional[logging.Logger] = None):
         self.db = db_queries
@@ -72,7 +76,8 @@ class MLSignalGenerator:
         except Exception as e:
             self.logger.error(f"Feature preparation failed: {e}")
             raise
-
+        
+    #generate the prediction using the ML model
     async def _generate_prediction(self, features: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """Generate prediction using ML model"""
         try:
@@ -84,32 +89,37 @@ class MLSignalGenerator:
         except Exception as e:
             self.logger.error(f"Prediction generation failed: {e}")
             return None
-
+    #get the minimum probability threshold for the ML signal
     @property
     def min_probability(self) -> float:
         """Minimum probability threshold"""
         return 0.7
-
-async def generate_ml_signals(data: pd.DataFrame, ctx: Any) -> List[Dict[str, Any]]:
-    """Main entry point for ML signal generation"""
-    try:
-        signal_generator = MLSignalGenerator(ctx.db_queries, ctx.logger)
-        signals = []
-        
-        for symbol in data['symbol'].unique():
-            symbol_data = data[data['symbol'] == symbol].copy()
-            if not symbol_data.empty:
-                signal = await signal_generator.generate_signal(
-                    symbol=symbol,
-                    data=symbol_data,
-                    timeframe=ctx.config.get('timeframe', '15m'),
-                    lookback_periods=ctx.config.get('lookback_periods', 100)
-                )
-                if signal:
-                    signals.append(signal)
-                    
-        return signals
-        
-    except Exception as e:
-        ctx.logger.error(f"ML signal generation failed: {str(e)}")
-        return [] 
+    
+async def generate_ml_signals(ctx, data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generates machine learning-based trading signals.
+    
+    :param ctx: Trading context
+    :param data: Input data for signal generation
+    :return: Generated signals
+    """
+    if not data.get('trend') or not data.get('strength'):
+        raise ValidationError("Missing required fields: trend and strength")
+    #validate the trend for the machine learning signal generator
+    trend = data['trend'].lower()
+    if trend not in ['bullish', 'bearish']:
+        raise ValidationError(f"Invalid trend: {trend}")
+    #generate the signals for the machine learning signal generator
+    signals = {
+        'symbol': data['symbol'],
+        'action': 'buy' if trend == 'bullish' else 'sell',
+        'strength': Decimal(str(data['strength'])),
+        'timestamp': datetime.utcnow(),
+        'metadata': {
+            'source': 'ml_model',
+            'version': '1.0',
+            'trend': trend
+        }
+    }
+    #return the signals for the machine learning signal generator to the trading context
+    return signals  

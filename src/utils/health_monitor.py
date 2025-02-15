@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
+#src/utils/health_monitor.py
 """
 Module: utils/health_monitor.py
 Production health monitoring system
@@ -19,8 +21,10 @@ from utils.numeric import NumericHandler
 from collections import deque, defaultdict
 import aiohttp
 
+#dataclass for component health
 @dataclass
 class ComponentHealth:
+    """Component health status"""
     name: str
     status: bool
     message: str = ""
@@ -33,8 +37,10 @@ class ComponentHealth:
     def is_healthy(self) -> bool:
         return self.status and self.error_count < 3
 
+#dataclass for health status
 @dataclass
 class HealthStatus:
+    """Health status"""
     timestamp: float
     is_healthy: bool
     warnings: List[str]
@@ -42,10 +48,12 @@ class HealthStatus:
     components: Dict[str, ComponentHealth]
     system_metrics: Dict[str, Any]
 
+#health monitor class               
 class HealthMonitor:
+    """Health monitoring system"""
     def __init__(self, ctx):
         self.ctx = ctx
-        self.logger = ctx.logger or logging.getLogger(__name__)
+        self.logger = ctx.logger
         self.nh = NumericHandler()
         self._component_lock = asyncio.Lock()
         self._db_lock = asyncio.Lock()
@@ -56,6 +64,7 @@ class HealthMonitor:
         self.latency_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         self.max_history = 1000
         
+        #last check time
         self.last_check = 0
         self.error_thresholds = {
             'api': 3,
@@ -96,6 +105,7 @@ class HealthMonitor:
         self.exchange_interface = getattr(ctx, "exchange_interface", None)
         self.market_data = getattr(ctx, "market_data", None)
 
+        #initialize health monitor
     async def initialize(self) -> bool:
         """Initialize health monitor"""
         try:
@@ -119,7 +129,9 @@ class HealthMonitor:
                 await handle_error_async(e, "HealthMonitor.start_monitoring", self.logger)
                 await asyncio.sleep(5)  # Back off on error
 
+        #check system health    
     async def check_system_health(self) -> Dict[str, bool]:
+        """Check system health"""
         try:
             now = time.time()
             if now - self.last_check < self.check_interval:
@@ -152,7 +164,9 @@ class HealthMonitor:
             self.status.errors.append(str(e))
             return {'healthy': False, 'error': str(e)}
 
+        #check memory
     async def _check_memory(self) -> bool:
+        """Check memory usage"""
         try:
             usage = psutil.Process().memory_percent()
             return usage < self.error_thresholds['memory']
@@ -160,6 +174,7 @@ class HealthMonitor:
             self.logger.error(f"Memory check failed: {e}")
             return False
 
+        #check api health
     async def _check_api_health(self) -> bool:
         """Check API health"""
         try:
@@ -171,6 +186,7 @@ class HealthMonitor:
             self.logger.error(f"API health check failed: {e}")
             return False
 
+        #check database
     async def _check_database(self) -> bool:
         """Verify database connection and performance"""
         try:
@@ -197,7 +213,7 @@ class HealthMonitor:
         except Exception as e:
             self.logger.error(f"Exchange check failed: {e}")
             return False
-            
+    #check market data
     async def _check_market_data(self) -> bool:
         """Verify market data freshness"""
         try:
@@ -211,6 +227,7 @@ class HealthMonitor:
             self.logger.error(f"Market data check failed: {e}")
             return False
 
+    #check database
     async def check_database(self) -> Tuple[bool, float, Optional[str]]:
         """Check database connectivity and health"""
         start_time = time.time()
@@ -234,7 +251,7 @@ class HealthMonitor:
                 else:
                     self.logger.info("Database being initialized for first time")
                     return True, 0.0, None
-
+            #response time
             response_time = time.time() - start_time
             
             # Update component status
@@ -256,10 +273,11 @@ class HealthMonitor:
             self.components['database'].response_time = response_time
             self.components['database'].message = error_msg
             self.components['database'].error_count += 1
-            
+            #log the error for the database health check
             self.logger.warning(error_msg)
             return False, response_time, error_msg
 
+        #check exchange
     async def check_exchange(self) -> Tuple[bool, float, Optional[str]]:
         """Check exchange connectivity and health"""
         start_time = time.time()
@@ -290,7 +308,7 @@ class HealthMonitor:
             self.components['exchange'].error_count += 1
             
             return False, response_time, error_msg
-
+    #check system resources
     def check_system_resources(self) -> Dict[str, Any]:
         """Check system resource utilization"""
         try:
@@ -340,6 +358,7 @@ class HealthMonitor:
                 'healthy': False
             }
 
+        #check market data
     async def check_market_data(self) -> Tuple[bool, float, Optional[str]]:
         """Check market data service health"""
         start_time = time.time()
@@ -375,6 +394,7 @@ class HealthMonitor:
             
             return False, response_time, error_msg
 
+        #get system metrics
     def get_system_metrics(self) -> Dict[str, float]:
         """Get current system metrics"""
         try:
@@ -392,6 +412,7 @@ class HealthMonitor:
                 'cpu_used_pct': 100.0
             }
 
+        #update component
     def update_component(self, component: str, healthy: bool, latency: float, error: Optional[str] = None):
         """Update component health status"""
         if component not in self.components:
@@ -410,6 +431,7 @@ class HealthMonitor:
         else:
             comp.message = ""
 
+        #check emergency shutdown
     def should_emergency_shutdown(self) -> bool:
         """Determine if emergency shutdown needed"""
         try:
@@ -447,6 +469,7 @@ class HealthMonitor:
             self.logger.error(f"Error in should_emergency_shutdown: {e}")
             return True  # Fail safe
 
+        #get health status
     def get_health_status(self) -> HealthStatus:
         """Get current health status"""
         try:
@@ -484,6 +507,7 @@ class HealthMonitor:
                 system_metrics={}
             )
 
+        #get health report
     def get_health_report(self) -> Dict[str, Any]:
         """Generate comprehensive health report"""
         try:
@@ -516,6 +540,7 @@ class HealthMonitor:
                 'error': str(e)
             }
 
+        #update component metrics
     async def update_component_metrics(self, component: str, latency: float):
         """Thread-safe component metric updates"""
         async with self._metric_lock:
@@ -543,6 +568,7 @@ class HealthMonitor:
             except Exception as e:
                 await handle_error_async(e, "HealthMonitor.update_component_metrics", self.logger)
 
+        #monitor loop
     async def monitor_loop(self):
         """Main monitoring loop"""
         try:
@@ -554,6 +580,7 @@ class HealthMonitor:
             # Don't restart automatically - let the circuit breaker handle it
             raise
 
+        #monitor component health
     async def monitor_component_health(self, component: str):
         """Monitor individual component health"""
         async with self._component_lock:
@@ -624,6 +651,7 @@ class HealthMonitor:
             self.logger.error(f"System health check failed: {e}")
             return False
 
+    #check system readiness
     async def check_system_readiness(self) -> Tuple[bool, Dict[str, bool]]:
         """Check if system components are ready for trading (beyond just health)"""
         readiness = {
@@ -658,18 +686,20 @@ class HealthMonitor:
             
             # Overall readiness requires all components
             readiness['overall'] = all(ready for component, ready in readiness.items() if component != 'overall')
-            
+            #if not ready, log missing components
             if not readiness['overall']:
                 missing = [comp for comp, ready in readiness.items() if not ready and comp != 'overall']
                 self.logger.info(f"System not ready for trading. Missing: {', '.join(missing)}")
-            
+            #return overall readiness and readiness components
             return readiness['overall'], readiness
             
         except Exception as e:
             self.logger.warning(f"Could not check system readiness: {e}")
             return False, readiness
 
+    #collect system metrics
     async def collect_system_metrics(self) -> Dict[str, Any]:
+        """Collect system metrics"""
         metrics = {}
         try:
             cpu = psutil.cpu_percent(interval=1)
@@ -690,3 +720,30 @@ class HealthMonitor:
             self.logger.error(f"Failed to collect disk usage: {e}")
         
         return metrics
+    #check system health 
+    async def check_system_health(self) -> Dict[str, bool]:
+        """Check system health"""
+        try:
+            # Check database health
+            db_healthy, _, _ = await self.check_database()
+            # Check exchange health
+            exchange_healthy, _, _ = await self.check_exchange()
+            # Check system resources
+            sys_metrics = self.check_system_resources()
+            # Check market data
+            market_healthy, _, _ = await self.check_market_data()   
+            #return the system health
+            return {
+                'database': db_healthy,
+                'exchange': exchange_healthy,
+                'system': sys_metrics['healthy'],
+                'market': market_healthy
+            }   
+        except Exception as e:
+            self.logger.error(f"Failed to check system health: {e}")
+            return {
+                'database': False,
+                'exchange': False,
+                'system': False,
+                'market': False
+            }       

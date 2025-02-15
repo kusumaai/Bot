@@ -17,9 +17,9 @@ from trading.position import Position
 from .limits import RiskLimits
 from trading.portfolio import PortfolioManager
 from .validation import MarketDataValidation
-from utils.exceptions import RiskManagerError
+from utils.exceptions import RiskManagerError, ValidationError, RiskCalculationError, MathError
 from utils.numeric_handler import NumericHandler
-
+#position info data class
 @dataclass
 class PositionInfo:
     """Position information data class"""
@@ -31,13 +31,15 @@ class PositionInfo:
     leverage: Decimal = Decimal('1.0')
 
 class RiskManager:
+    """Risk manager class"""
     def __init__(self, risk_limits, db_queries, logger):
         self.risk_limits = risk_limits
         self.db_queries = db_queries
         self.logger = logger
         self._lock = asyncio.Lock()
         self.initialized = False
-        self.nh = NumericHandler()
+        self.nh = NumericHandler(logger)
+        self.portfolio = PortfolioManager(db_queries, logger)
         
         # These will be initialized during initialize()
         self.position_limits = None
@@ -73,6 +75,7 @@ class RiskManager:
             return False
 
     def validate_position(
+        #validate a new position against all risk limits
         self, 
         symbol: str, 
         size: Decimal, 
@@ -95,7 +98,7 @@ class RiskManager:
                 p.size * p.current_price 
                 for p in self.portfolio.positions.values()
             ) + position_value
-        
+
             if portfolio_value > Decimal('0') and (total_exposure / portfolio_value) > self.risk_limits['max_position_size']:
                 return False, "Leverage limit exceeded"
                 
@@ -248,32 +251,36 @@ class RiskManager:
             (position.direction == "short" and position.current_price >= position.stop_loss)
         )
 
-    async def calculate_position_size(
-        self, 
-        signal: Dict[str, Any]
-    ) -> Decimal:
-        """Calculate safe position size with all risk checks"""
+    async def calculate_position_size(self, signal: Dict[str, Any], current_price: Decimal) -> Decimal:
+        """Calculate safe position size with all risk checks."""
         try:
-            price_str = signal.get('price')
-            if price_str is None:
-                self.logger.error("Signal missing 'price'.")
-                return Decimal('0')
-            price = self.nh.to_decimal(price_str)
+            price = self.nh.convert_to_decimal(signal.get('price'))
             account_size = await self.portfolio.get_total_value()
-            risk_factor = self.nh.percentage_to_decimal(self.risk_limits['max_position_size'])
+            risk_factor = self.nh.percentage_to_decimal(self.risk_limits.risk_factor)
             
             position_size = account_size * risk_factor
-            max_allowed = self.risk_limits['max_position_size'] * account_size
+            max_allowed = self.risk_limits.max_position_size * account_size
             return min(
                 position_size,
                 max_allowed
-            )
+            ).quantize(Decimal('0.0001'))
         except (InvalidOperation, TypeError) as e:
             self.logger.error(f"Position size calculation failed: {e}")
             return Decimal('0')
         except Exception as e:
             self.logger.error(f"Unexpected error in calculate_position_size: {e}")
             return Decimal('0')
+
+    async def calculate_kelly_fraction(self, probability: Decimal, odds: Decimal) -> Decimal:
+        """Calculates the Kelly fraction."""
+        try:
+            if odds <= Decimal('0'):
+                return Decimal('0')
+            kelly = (probability * (odds + Decimal('1')) - Decimal('1')) / odds
+            return max(Decimal('0'), min(kelly, Decimal('1')))
+        except Exception as e:
+            await handle_error_async(e, "calculate_kelly_fraction", self.logger)
+            raise MathError(f"Error calculating Kelly fraction: {e}")
 
     async def validate_order(self, order: Dict[str, Any]) -> bool:
         """Validate an order before execution"""
@@ -360,5 +367,107 @@ class RiskManager:
             return False
 
     def _load_position_limits(self) -> Dict[str, Any]:
-        # Implementation to load position limits from configuration
-        return {} 
+        """Load position limits from configuration"""   
+        try:
+            # Get position limits from config
+            position_limits = {}
+            
+            # Load from config if available
+            if hasattr(self.ctx, 'config') and 'position_limits' in self.ctx.config:
+                raw_limits = self.ctx.config['position_limits']
+                
+                # Convert string values to Decimal
+                for symbol, limits in raw_limits.items():
+                    position_limits[symbol] = {
+                        'min_qty': Decimal(str(limits.get('min_qty', '0'))),
+                        'max_qty': Decimal(str(limits.get('max_qty', '0')))
+                    }
+                    
+            # Add default limits if none configured
+            if not position_limits:
+                self.logger.warning("No position limits found in config, using defaults")
+                position_limits = {
+                    'default': {
+                        'min_qty': Decimal('0.001'),
+                        'max_qty': Decimal('100.0')
+                    }
+                }
+                
+            return position_limits
+            
+        except (InvalidOperation, TypeError) as e:
+            self.logger.error(f"Error loading position limits: {e}")
+            return {}
+        except Exception as e:
+            self.logger.error(f"Unexpected error loading position limits: {e}")
+            return {}
+        
+    # Implementation to load position limits from configuration
+    async def check_system_readiness(self) -> Tuple[bool, Dict[str, bool]]:
+            """Check if system components are ready for risk management"""
+            readiness = {
+                'position_limits': False,
+                'risk_limits': False,
+                'portfolio': False,
+                'overall': False
+            }
+            
+            try:
+                # Check position limits loaded
+                if self.position_limits and len(self.position_limits) > 0:
+                    readiness['position_limits'] = True
+                
+                # Check risk limits initialized
+                if self.risk_limits:
+                    readiness['risk_limits'] = True
+                    
+                # Check portfolio manager initialized
+                if self.portfolio and self.portfolio.initialized:
+                    readiness['portfolio'] = True
+                
+                # Overall readiness requires all components
+                readiness['overall'] = all(ready for component, ready in readiness.items() if component != 'overall')
+                
+                # Log missing components if not ready
+                if not readiness['overall']:
+                    missing = [comp for comp, ready in readiness.items() if not ready and comp != 'overall']
+                    self.logger.info(f"Risk manager not ready. Missing: {', '.join(missing)}")
+                
+                return readiness['overall'], readiness
+                
+            except Exception as e:
+                self.logger.warning(f"Could not check risk system readiness: {e}")
+                return False, readiness
+
+    async def validate_risk_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Validates risk metrics against defined risk limits."""
+        try:
+            # Validate value against max limit
+            if metrics['value'] > self.risk_limits.max_value:
+                raise ValidationError("Risk metric value exceeds maximum allowed.")
+                
+            # Validate drawdown percentage
+            if metrics.get('drawdown', 0) > self.risk_limits.max_drawdown:
+                raise ValidationError("Drawdown exceeds maximum allowed threshold.")
+                
+            # Validate leverage ratio
+            if metrics.get('leverage', 0) > self.risk_limits.max_leverage:
+                raise ValidationError("Leverage ratio exceeds maximum allowed.")
+                
+            # Validate position concentration
+            if metrics.get('position_concentration', 0) > self.risk_limits.max_position_size:
+                raise ValidationError("Position concentration exceeds diversification limits.")
+                
+            # Validate daily loss
+            if metrics.get('daily_loss', 0) > self.risk_limits.max_daily_loss:
+                raise ValidationError("Daily loss exceeds maximum allowed threshold.")
+                
+            # Validate system metrics
+            if metrics.get('cpu_usage', 0) > 85 or metrics.get('memory_usage', 0) > 90:
+                raise ValidationError("System resource usage exceeds safe thresholds.")
+        except KeyError as e:
+            await handle_error_async(e, "RiskManager.validate_risk_metrics", self.logger)
+            raise ValidationError(f"Missing key in metrics: {e}")
+        except Exception as e:
+            await handle_error_async(e, "RiskManager.validate_risk_metrics", self.logger)
+            raise ValidationError(f"Error validating risk metrics: {e}") 

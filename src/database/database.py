@@ -18,6 +18,7 @@ import asyncio
 from utils.numeric_handler import NumericHandler
 from utils.error_handler import handle_error_async, DatabaseError
 from utils.exceptions import DatabaseError
+from aiosqlite import connect
 
 logger = logging.getLogger('TradingBot')
 
@@ -63,7 +64,17 @@ class DatabaseConnection:
             self.conn.close()
 
     async def initialize(self):
-        return True
+        try:
+            self.conn = await connect(self.db_path)
+            await self.create_tables()
+            return True
+        except Exception as e:
+            # Handle exception, possibly log it
+            return False
+
+    async def create_tables(self):
+        # Implementation to create necessary tables
+        pass
 
 @asynccontextmanager
 async def async_db_connection(db_path: str):
@@ -77,7 +88,7 @@ async def async_db_connection(db_path: str):
 
 async def execute_sql(query: str, params: Tuple[Any, ...], db_path: str) -> bool:
     try:
-        async with get_db_connection(db_path) as db:
+        async with database.get_db_connection(db_path) as db:
             await db.execute(query, params)
             await db.commit()
         return True

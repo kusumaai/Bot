@@ -3,11 +3,14 @@
 class TradingError(Exception):
     """Base class for trading system exceptions"""
     pass
-
+    
+#order error class
 class OrderError(TradingError):
     """Raised when there's an error with order execution"""
     pass
-
+class OrderOrderCancelErrorError(TradingError):
+    """Raised when there's an error with order cancellation"""
+    pass
 class InvalidOrderError(OrderError):
     """Raised when order parameters are invalid"""
     pass

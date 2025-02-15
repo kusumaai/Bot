@@ -1,3 +1,7 @@
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
+#test_utils_health_monitor.py
+"""Test health monitor"""
 import logging
 import pytest
 import asyncio
@@ -8,12 +12,13 @@ from decimal import Decimal
 from src.utils.health_monitor import HealthMonitor
 from src.utils.error_handler import handle_error_async
 from src.database.queries import DatabaseQueries
-
+#fixture for database queries
 @pytest.fixture
 def mock_db_queries():
     """Provide a mocked DatabaseQueries instance."""
     return AsyncMock(spec=DatabaseQueries)
 
+#fixture for exchange interface
 @pytest.fixture
 def mock_exchange_interface():
     """Provide a mocked ExchangeInterface."""
@@ -22,11 +27,13 @@ def mock_exchange_interface():
     mock_interface.exchange.ping = AsyncMock(return_value=True)
     return mock_interface
 
+#fixture for logger
 @pytest.fixture
 def mock_logger():
     mock = MagicMock()
     return mock
 
+#fixture for context
 @pytest.fixture
 def mock_context():
     ctx = MagicMock()
@@ -36,11 +43,13 @@ def mock_context():
     ctx.market_data = MagicMock()
     return ctx
 
+#fixture for health monitor
 @pytest.fixture
 def health_monitor(mock_logger, mock_db_queries):
     """Provide a HealthMonitor instance."""
     return HealthMonitor(db_queries=mock_db_queries, logger=mock_logger)
 
+#test successful database connectivity check
 @pytest.mark.asyncio
 async def test_check_database_success(health_monitor):
     """Test successful database connectivity check."""
@@ -52,6 +61,7 @@ async def test_check_database_success(health_monitor):
     assert error is None
     health_monitor.db_queries.ping_database.assert_awaited_once()
 
+#test database connectivity failure
 @pytest.mark.asyncio
 async def test_check_database_failure(health_monitor):
     """Test database connectivity failure."""
@@ -63,6 +73,7 @@ async def test_check_database_failure(health_monitor):
     assert error == "DB Connection Failed"
     health_monitor.db_queries.ping_database.assert_awaited_once()
 
+#test successful exchange connectivity check
 @pytest.mark.asyncio
 async def test_check_exchange_success(health_monitor):
     """Test successful exchange connectivity check."""
@@ -74,6 +85,7 @@ async def test_check_exchange_success(health_monitor):
     assert error is None
     health_monitor.exchange_interface.exchange.ping.assert_awaited_once()
 
+#test exchange connectivity failure
 @pytest.mark.asyncio
 async def test_check_exchange_failure(health_monitor):
     """Test exchange connectivity failure."""
@@ -85,6 +97,7 @@ async def test_check_exchange_failure(health_monitor):
     assert error == "Exchange Unreachable"
     health_monitor.exchange_interface.exchange.ping.assert_awaited_once()
 
+#test overall system health when all components are healthy
 @pytest.mark.asyncio
 async def test_is_system_healthy_all_components_healthy(health_monitor):
     """Test overall system health when all components are healthy."""
@@ -98,6 +111,7 @@ async def test_is_system_healthy_all_components_healthy(health_monitor):
     health_monitor.check_exchange.assert_awaited_once()
     health_monitor.check_market_data.assert_awaited_once()
 
+#test overall system health when one component is unhealthy
 @pytest.mark.asyncio
 async def test_is_system_healthy_one_component_unhealthy(health_monitor):
     """Test overall system health when one component is unhealthy."""
@@ -111,6 +125,7 @@ async def test_is_system_healthy_one_component_unhealthy(health_monitor):
     health_monitor.check_exchange.assert_awaited_once()
     health_monitor.check_market_data.assert_awaited_once()
 
+#test successful collection of system metrics
 @pytest.mark.asyncio
 async def test_collect_system_metrics_success(health_monitor):
     """Test successful collection of system metrics."""
@@ -134,6 +149,7 @@ async def test_collect_system_metrics_failure(health_monitor, mock_logger):
         assert 'cpu_usage' not in metrics  # Example assumption
         mock_logger.error.assert_called_with("Failed to collect CPU usage: CPU fetch error")
 
+#test successful system resource check
 @pytest.mark.asyncio
 async def test_check_system_resources_success(health_monitor):
     """Test successful system resource check."""
@@ -164,6 +180,7 @@ async def test_check_system_resources_critical(health_monitor):
         assert metrics['cpu_healthy'] is False
         assert 'System resources critical' in health_monitor.components['system'].message
 
+#test successful market data check
 @pytest.mark.asyncio
 async def test_check_market_data_success(health_monitor):
     """Test successful market data check."""
@@ -190,6 +207,7 @@ async def test_check_market_data_failure(health_monitor):
     assert "No market data available" in error
     assert health_monitor.components['market_data'].status is False
 
+#test component metric updates
 @pytest.mark.asyncio
 async def test_update_component_metrics(health_monitor):
     """Test component metric updates."""
@@ -213,6 +231,7 @@ async def test_should_emergency_shutdown(health_monitor):
     
     assert health_monitor.should_emergency_shutdown() is True
 
+#test system metrics collection failure
 @pytest.mark.asyncio
 async def test_get_system_metrics_failure(health_monitor):
     """Test system metrics collection failure."""
@@ -222,6 +241,7 @@ async def test_get_system_metrics_failure(health_monitor):
         assert metrics['memory_used_pct'] == 100.0
         assert metrics['disk_used_pct'] == 100.0
 
+#test system readiness check with fresh system (no data)
 @pytest.mark.asyncio
 async def test_check_system_readiness_fresh_system(health_monitor):
     """Test system readiness check with fresh system (no data)."""
@@ -249,6 +269,7 @@ async def test_check_system_readiness_fresh_system(health_monitor):
         'overall': False
     }
 
+#test system readiness check with partial data
 @pytest.mark.asyncio
 async def test_check_system_readiness_partially_ready(health_monitor):
     """Test system readiness check with partial data."""
@@ -303,6 +324,7 @@ async def test_check_system_readiness_fully_ready(health_monitor):
         'overall': True
     }
 
+#test system readiness check with database error
 @pytest.mark.asyncio
 async def test_check_system_readiness_db_error(health_monitor):
     """Test system readiness check with database error."""
@@ -319,6 +341,7 @@ async def test_check_system_readiness_db_error(health_monitor):
         'overall': False
     }
 
+#test system readiness check with no database connection    
 @pytest.mark.asyncio
 async def test_check_system_readiness_no_db_connection(health_monitor):
     """Test system readiness check with no database connection."""

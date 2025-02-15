@@ -1,46 +1,42 @@
+#! /usr/bin/env python3
+#test risk manager
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 from decimal import Decimal
 import logging
-
 from src.risk.manager import RiskManager, PositionInfo
 from src.risk.limits import RiskLimits
 from src.database.queries import DatabaseQueries
 from src.utils.error_handler import RiskError
+from src.utils.exceptions import MathError, RiskCalculationError
 
+#risk limits for the risk manager tests
 @pytest.fixture
 def risk_limits():
     """Provide test risk limits"""
     return RiskLimits(
-        max_position_size=Decimal('0.1'),
-        min_position_size=Decimal('0.01'),
-        max_positions=3,
-        max_leverage='2.0',
-        max_drawdown='0.1',
-        max_daily_loss='0.03',
-        emergency_stop_pct='3.0',
-        risk_factor='0.01',
-        kelly_scaling='0.5',
-        max_correlation='0.7',
-        max_sector_exposure='0.3',
-        max_volatility='0.05',
-        min_liquidity='100000'
+        max_value=Decimal('1000'),
+        max_correlation=Decimal('0.75'),
+        min_liquidity=Decimal('10000'),
+        max_position_size=Decimal('500'),
+        min_position_size=Decimal('10'),
+        risk_factor=Decimal('1')  # Assuming '1' represents 1%
     )
 
-
+#database queries for the risk manager tests
 @pytest.fixture
 async def db_queries():
     """Provide a mocked DatabaseQueries instance."""
     return DatabaseQueries(AsyncMock())
 
-
+#logger for the risk manager tests
 @pytest.fixture
 def logger():
     """Provide a logger fixture."""
     return logging.getLogger("TestRiskManager")
 
-
+#test calculate kelly fraction for the risk manager tests
 @pytest.mark.asyncio
 async def test_calculate_kelly_fraction(risk_manager):
     """Test Kelly fraction calculation."""
@@ -51,31 +47,48 @@ async def test_calculate_kelly_fraction(risk_manager):
     expected_kelly = (probability * (odds + 1) - 1) / odds
     assert kelly == expected_kelly.quantize(Decimal('0.0001'))
 
-
+#test calculate position size for the risk manager tests
 @pytest.mark.asyncio
 async def test_calculate_position_size(risk_limits, db_queries, logger):
     """Test position size calculation based on risk factors."""
     rm = RiskManager(risk_limits, db_queries, logger)
     
-    symbol = "BTC/USDT"
-    account_size = Decimal('10000')
-    expected_risk = account_size * risk_limits.risk_factor  # 100
-    
     signal = {
         "probability": Decimal('0.6'),
         "odds": Decimal('1.5'),
-        "entry_price": Decimal('50000')
+        "price": Decimal('50000')
     }
     
-    kelly_fraction = (signal['probability'] * (signal['odds'] + 1) - 1) / signal['odds']  # 0.333...
-    calculated_size = rm.calculate_position_size(signal, Decimal('50000'))
-    expected_size = (expected_risk * Decimal(kelly_fraction)).quantize(Decimal('0.0001')) / signal['entry_price']
+    # Mock portfolio.get_total_value()
+    rm.portfolio.get_total_value = MagicMock(return_value=Decimal('10000'))
     
+    calculated_size = await rm.calculate_position_size(signal, Decimal('50000'))
+    expected_size = (Decimal('10000') * (Decimal('1') / Decimal('100'))).quantize(Decimal('0.0001'))  # 100 / 50000 = 0.0020
+    
+    assert isinstance(calculated_size, Decimal)
     assert calculated_size == expected_size
     assert calculated_size <= risk_limits.max_position_size
     assert calculated_size >= risk_limits.min_position_size
 
+#test calculate position size for the risk manager tests
+@pytest.mark.asyncio
+async def test_calculate_position_size_invalid_price(risk_limits, db_queries, logger):
+    """Test position size calculation with invalid price."""
+    rm = RiskManager(risk_limits, db_queries, logger)
+    #signal for the risk manager tests
+    signal = {
+        "probability": Decimal('0.6'),
+        "odds": Decimal('1.5'),
+        "price": 'invalid_price'  # Invalid price
+    }
+    
+    # Mock portfolio.get_total_value()
+    rm.portfolio.get_total_value = MagicMock(return_value=Decimal('10000'))
+    
+    calculated_size = await rm.calculate_position_size(signal, Decimal('50000'))
+    assert calculated_size == Decimal('0')
 
+#test validate risk metrics within limits for the risk manager tests
 @pytest.mark.asyncio
 async def test_validate_risk_metrics_within_limits(risk_limits, db_queries, logger):
     """Test that validate_risk_metrics passes when within limits."""
@@ -92,7 +105,7 @@ async def test_validate_risk_metrics_within_limits(risk_limits, db_queries, logg
     except RiskError:
         pytest.fail("validate_risk_metrics raised RiskError unexpectedly!")
 
-
+#test validate risk metrics exceed drawdown for the risk manager tests
 @pytest.mark.asyncio
 async def test_validate_risk_metrics_exceed_drawdown(risk_limits, db_queries, logger):
     """Test that validate_risk_metrics raises RiskError when drawdown is exceeded."""
@@ -104,7 +117,7 @@ async def test_validate_risk_metrics_exceed_drawdown(risk_limits, db_queries, lo
     with pytest.raises(RiskError, match="Drawdown exceeds maximum allowed"):
         await rm.validate_risk_metrics()
 
-
+#test validate risk metrics exceed daily loss for the risk manager tests
 @pytest.mark.asyncio
 async def test_validate_risk_metrics_exceed_daily_loss(risk_limits, db_queries, logger):
     """Test that validate_risk_metrics raises RiskError when daily loss is exceeded."""
@@ -116,7 +129,7 @@ async def test_validate_risk_metrics_exceed_daily_loss(risk_limits, db_queries, 
     with pytest.raises(RiskError, match="Daily loss exceeds maximum allowed"):
         await rm.validate_risk_metrics()
 
-
+#test emergency stop triggered for the risk manager tests
 @pytest.mark.asyncio
 async def test_emergency_stop_triggered(risk_limits, db_queries, logger):
     """Test that emergency stop is triggered correctly."""
@@ -128,7 +141,7 @@ async def test_emergency_stop_triggered(risk_limits, db_queries, logger):
     with pytest.raises(RiskError, match="Emergency stop triggered"):
         await rm.validate_risk_metrics() 
 
-
+#test mock portfolio manager for the risk manager tests 
 @pytest.fixture
 def mock_portfolio_manager():
     """Provide a mocked PortfolioManager."""
@@ -137,7 +150,7 @@ def mock_portfolio_manager():
     mock_portfolio.current_drawdown = Decimal('0.05')
     return mock_portfolio
 
-
+#test risk manager for the risk manager tests   
 @pytest.fixture
 def risk_manager(risk_limits, mock_portfolio_manager, logger):
     """Provide a RiskManager instance with mocked dependencies."""

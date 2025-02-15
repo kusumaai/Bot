@@ -5,9 +5,13 @@ from collections import defaultdict
 from utils.data_validator import DataValidator
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import OrderError, InvalidOrderError
-
+from src.database.queries import DatabaseQueries
+from src.utils.error_handler import handle_error_async
+from src.utils.exceptions import OrderStoreError
+#order manager class that manages orders and order history by using the exchange interface and db queries
 class OrderManager:
-    def __init__(self, exchange_interface, db_queries, logger):
+    """Order manager class"""
+    def __init__(self, exchange_interface, db_queries: DatabaseQueries, logger):
         self.exchange_interface = exchange_interface
         self.db_queries = db_queries
         self.logger = logger
@@ -16,7 +20,7 @@ class OrderManager:
         self.nh = NumericHandler()
         self.open_orders: Dict[str, Dict[str, Any]] = {}
         self.order_history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-
+    #place an order with risk validation
     async def place_order(self, symbol: str, side: str, amount: Decimal, order_type: str, price: Decimal) -> bool:
         """Place an order with risk validation."""
         async with self._lock:
@@ -30,8 +34,9 @@ class OrderManager:
                 return True
             self.logger.error("Order ID missing from trade result.")
             return False
-
+    #cancel an order        
     async def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order."""  
         async with self._lock:
             try:
                 order = await self.exchange_interface.close_order(order_id)
@@ -45,11 +50,21 @@ class OrderManager:
             except Exception as e:
                 self.logger.error(f"Error cancelling order {order_id}: {e}")
                 return False
-
+    #get order status
     async def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Get order status."""
         try:
             order = await self.exchange_interface.get_order_status(order_id)
             return order
         except Exception as e:
             self.logger.error(f"Failed to get order status for {order_id}: {e}")
-            return None 
+            return None
+    #store order details in the database
+    async def store_order(self, order_details: Dict[str, Any]) -> bool:
+        """Stores order details in the database."""
+        try:
+            await self.db_queries.insert_order(order_details)
+            return True
+        except Exception as e:
+            await handle_error_async(e, "OrderManager.store_order", self.logger)
+            raise OrderStoreError(f"Error storing order: {e}") 

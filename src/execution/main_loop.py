@@ -9,12 +9,7 @@ from signals.signal_utils import analyze_signal
 class MainLoop:  # Changed from main_loop function to MainLoop class
     """Main trading loop orchestrator"""
 
-    def __init__(self, ctx=None, **kwargs):
-        if ctx is None:
-            class DummyContext:
-                logger = logging.getLogger("Dummy")
-                config = {}
-            ctx = DummyContext()
+    def __init__(self, ctx):
         self.ctx = ctx
         self.logger = getattr(ctx, "logger", logging.getLogger(__name__))
         if callable(self.logger):

@@ -88,3 +88,8 @@ class RiskConfig:
             'ratchet_thresholds': [str(t) for t in self.ratchet_thresholds],
             'ratchet_lock_ins': [str(l) for l in self.ratchet_lock_ins]
         } 
+
+    def validate_risk_limits(self, limits: RiskLimits) -> ValidationResult:
+        """Validate risk limits against RiskConfig"""
+        return limits.validate()
+

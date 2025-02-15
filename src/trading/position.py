@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from utils.exceptions import PositionUpdateError
+from utils.error_handler import handle_error_async
 
 @dataclass
 class Position:
@@ -50,3 +51,21 @@ class Position:
     def close_position(self, realized_pnl: Decimal):
         self.realized_pnl += realized_pnl
         self.closed = True 
+
+    async def update_price(self, new_price: Decimal) -> None:
+        """Updates the current price of the position."""
+        try:
+            self.current_price = new_price
+        except Exception as e:
+            await handle_error_async(e, "Position.update_price", self.logger)
+            raise PositionUpdateError(f"Error updating price: {e}")
+
+    async def close(self, close_price: Decimal) -> None:
+        """Closes the position."""
+        try:
+            self.current_price = close_price
+            self.closed = True
+            # Additional logic for closing position
+        except Exception as e:
+            await handle_error_async(e, "Position.close", self.logger)
+            raise PositionUpdateError(f"Error closing position: {e}") 

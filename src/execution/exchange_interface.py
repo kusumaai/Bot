@@ -40,6 +40,8 @@ class ExchangeInterface:
         self.risk_manager = risk_manager
         self.db_queries = db_queries
         self.logger = logger
+        #self.initialized = False
+        #self.nh = NumericHandler()
 
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int):
         try:

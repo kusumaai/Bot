@@ -3,7 +3,6 @@
 Module: tests/conftest.py
 Test fixtures and configuration
 """
-
 import os
 import sys
 
@@ -26,8 +25,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, Any
 
-# It is assumed that each directory in src (database, execution, risk, trading, utils)
-# contains an __init__.py file to mark it as a package.
+#each directory in src contains an __init__.py file to mark it as a package.
 from database.database import DatabaseConnection
 from execution.exchange_interface import ExchangeInterface
 from execution.market_data import MarketData
@@ -39,6 +37,7 @@ from utils.health_monitor import HealthMonitor
 from utils.logger import setup_logging
 from utils.numeric_handler import NumericHandler
 from utils.error_handler import ExchangeError, RiskError, DatabaseError
+from risk.limits import RiskLimits
 
 # Example fixture to provide a mock trading context to tests
 class MockContext:
@@ -57,10 +56,10 @@ class MockContext:
             "database": {"path": "data/trading.db"}
         }
         self.db_pool = "data/candles.db"
-
+#mock database connection
 @pytest.fixture
 async def mock_db():
-    """Mock database connection"""
+    """Mock database connection"""     
     db = AsyncMock(spec=DatabaseConnection)
     db.pool = AsyncMock()
     db.pool.acquire = AsyncMock()
@@ -80,7 +79,7 @@ async def mock_db():
     db.fetch_all = AsyncMock(return_value=[{'id': 1}])
     
     return db
-
+#exchange interface
 @pytest.fixture
 async def mock_exchange():
     """Mock exchange interface"""
@@ -92,14 +91,14 @@ async def mock_exchange():
     exchange.ping = AsyncMock(return_value=None)
     exchange.has = {'fetchTicker': True, 'createOrder': True, 'fetchBalance': True}
     return exchange
-
+#risk manager
 @pytest.fixture
 async def risk_manager(trading_context):
     """Create mock risk manager"""
     rm = RiskManager(trading_context)
     await rm.initialize()
     return rm
-
+#portfolio manager
 @pytest.fixture
 async def portfolio_manager(trading_context, risk_manager):
     """Create mock portfolio manager"""
@@ -107,7 +106,7 @@ async def portfolio_manager(trading_context, risk_manager):
     trading_context.risk_manager = risk_manager
     await pm.initialize()
     return pm
-
+#exchange interface
 @pytest.fixture
 async def exchange_interface(trading_context, mock_exchange):
     """Create mock exchange interface"""
@@ -115,7 +114,7 @@ async def exchange_interface(trading_context, mock_exchange):
     ei.exchange = mock_exchange
     await ei.initialize()
     return ei
-
+#market data
 @pytest.fixture
 async def market_data(trading_context, exchange_interface):
     """Create mock market data service"""
@@ -123,38 +122,148 @@ async def market_data(trading_context, exchange_interface):
     trading_context.exchange_interface = exchange_interface
     await md.initialize()
     return md
-
+#health monitor
 @pytest.fixture
 async def health_monitor(trading_context):
     """Create mock health monitor"""
     hm = HealthMonitor(trading_context)
     await hm.initialize()
     return hm
-
+#circuit breaker
 @pytest.fixture
 async def circuit_breaker(trading_context):
     """Create mock circuit breaker"""
     cb = CircuitBreaker(trading_context)
     await cb.initialize()
     return cb
-
+#ratchet manager
 @pytest.fixture
 async def ratchet_manager(trading_context):
     """Create mock ratchet manager"""
     rm = RatchetManager(trading_context)
     await rm.initialize()
     return rm
-
+#numeric handler    
+@pytest.fixture
+async def numeric_handler(trading_context):
+    """Create mock numeric handler"""
+    nh = NumericHandler(trading_context)
+    await nh.initialize()
+    return nh
+#trading context
 @pytest.fixture
 def trading_context(mock_db):
     """Create mock trading context with components"""
     ctx = MockContext()
     ctx.db_connection = mock_db
     return ctx
-
+#event loop
 @pytest.fixture
 def event_loop():
     """Create a new event loop for each test."""
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+#logger
+@pytest.fixture
+def mock_logger():
+    """Create a mock logger"""
+    return MagicMock()
+#database queries
+@pytest.fixture
+def mock_db_queries():
+    """Create a mock database queries"""
+    db_queries = MagicMock()
+    return db_queries
+#exchange interface
+@pytest.fixture
+def mock_exchange_interface():
+    """Create a mock exchange interface"""
+    exchange_interface = MagicMock()
+    return exchange_interface
+#market data
+@pytest.fixture
+def mock_market_data():
+    """Create a mock market data"""
+    market_data = MagicMock()
+    return market_data
+#health monitor
+@pytest.fixture
+def mock_health_monitor():
+    """Create a mock health monitor"""
+    health_monitor = MagicMock()
+    return health_monitor
+#circuit breaker
+@pytest.fixture
+def mock_circuit_breaker():
+    """Create a mock circuit breaker"""
+    circuit_breaker = MagicMock()
+    return circuit_breaker
+#ratchet manager
+@pytest.fixture
+def mock_ratchet_manager():
+    """Create a mock ratchet manager"""
+    ratchet_manager = MagicMock()
+    return ratchet_manager
+#numeric handler
+@pytest.fixture
+def mock_numeric_handler():
+    """Create a mock numeric handler"""
+    numeric_handler = MagicMock()
+    return numeric_handler
+#market data validation
+@pytest.fixture
+def mock_market_data_validation():
+    """Create a mock market data validation"""
+    market_data_validation = MagicMock()
+    return market_data_validation
+#math handler
+@pytest.fixture
+def mock_math_handler():
+    """Create a mock math handler"""
+    math_handler = MagicMock()
+    return math_handler
+#risk limits
+@pytest.fixture
+def mock_risk_limits():
+    """Create a mock risk limits"""
+    risk_limits = MagicMock()
+    return risk_limits
+#risk limits validation
+@pytest.fixture
+def mock_risk_limits_validation():
+    """Create a mock risk limits validation"""
+    risk_limits_validation = MagicMock()
+    return risk_limits_validation
+#risk limits
+@pytest.fixture
+def risk_limits():
+    return RiskLimits(
+        max_value=Decimal('1000'),
+        max_correlation=Decimal('0.75'),
+        min_liquidity=Decimal('10000'),
+        max_position_size=Decimal('500'),
+        min_position_size=Decimal('10'),
+        risk_factor=Decimal('0.01')
+    )
+#database queries
+@pytest.fixture
+def db_queries():
+    from src.database.queries import DatabaseQueries
+    return MagicMock(spec=DatabaseQueries)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

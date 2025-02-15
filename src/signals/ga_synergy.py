@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# src/signals/ga_synergy.py
 """
 Module: signals/ga_synergy.py
 Genetic algorithm for trading rule optimization
 """
-
+#import required modules
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
@@ -12,7 +13,6 @@ import uuid
 import numpy as np
 import pandas as pd
 from datetime import datetime
-
 from utils.error_handler import handle_error
 from bot_types.base_types import ValidationResult, Validatable
 from indicators.indicators_pta import compute_indicators
@@ -22,7 +22,7 @@ from trading.math import (
     predict_next_return
 )
 from utils.exceptions import InvalidOrderError
-
+#genetic algorithm trading rule class that defines the genetic algorithm trading rule
 @dataclass
 class GeneticRule(Validatable):
     """Genetic algorithm trading rule"""
@@ -40,7 +40,7 @@ class GeneticRule(Validatable):
     crossover_rate: Decimal = Decimal('0.8')
     last_update: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
-
+#validate the genetic rule parameters
     def validate(self) -> ValidationResult:
         """Validate genetic rule parameters"""
         try:
@@ -69,15 +69,16 @@ class GeneticRule(Validatable):
                 is_valid=False,
                 error_message=f"Genetic rule validation failed: {str(e)}"
             )
-
+#genetic algorithm signal class that defines the genetic algorithm signal
 @dataclass
 class GASignal:
     symbol: str
     action: str
     price: Decimal
     quantity: Decimal
-
-def generate_ga_signals(data: dict) -> GASignal:
+#generate the genetic algorithm signals
+def generate_ga_signals(data: dict) -> GASignal: 
+    """Generate trading signals using genetic algorithm rules"""
     action = data.get("action")
     if action not in ["buy", "sell"]:
         raise InvalidOrderError(f"Invalid action: {action}")
@@ -145,7 +146,8 @@ def generate_ga_signals(market_data: pd.DataFrame, population: List[GeneticRule]
         handle_error(e, "generate_ga_signals")
         return []
 
-def evaluate_rule_conditions(
+#evaluate the trading rule conditions
+def evaluate_rule_conditions(   
     rule: GeneticRule,
     data: pd.DataFrame,
     parameters: Dict[str, Any]
@@ -202,7 +204,7 @@ def evaluate_rule_conditions(
     except Exception as e:
         handle_error(e, "evaluate_rule_conditions")
         return None
-
+#create the initial population of trading rules for the genetic algorithm to optimize
 def create_initial_population(
     size: int,
     symbol: str,
@@ -211,7 +213,7 @@ def create_initial_population(
     """Create initial population of trading rules"""
     try:
         population = []
-        
+        #create the initial population of trading rules for the genetic algorithm to optimize the trading rules for the genetic algorithm in the trading context
         for _ in range(size):
             rule = GeneticRule(
                 rule_id=str(uuid.uuid4()),
@@ -230,7 +232,7 @@ def create_initial_population(
                 }
             )
             population.append(rule)
-            
+        #return the initial population of trading rules for the genetic algorithm to optimize the trading rules for the genetic algorithm in the trading context
         return population
 
     except Exception as e:
