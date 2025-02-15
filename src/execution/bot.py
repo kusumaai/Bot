@@ -72,15 +72,11 @@ async def initialize_components(ctx: TradingContext) -> bool:
 
         # --- Initialize Database Connection ---
         ctx.logger.info("Initializing Database Connection...")
-        if paper_mode:
-            ctx.logger.info("Paper mode enabled - using DummyDatabaseConnection.")
-            ctx.db_connection = DummyDatabaseConnection()
-        else:
-            from database.database import DatabaseConnection
+        from database.database import DatabaseConnection
 
-            ctx.db_connection = DatabaseConnection(
-                ctx.config.get("database", {}).get("path", "data/trading.db")
-            )
+        ctx.db_connection = DatabaseConnection(
+            ctx.config.get("database", {}).get("path", "data/trading.db")
+        )
 
         if not await ctx.db_connection.initialize():
             print("DEBUG: Database Connection initialization failed", flush=True)
@@ -201,26 +197,21 @@ async def run_bot():
             "price": "100",
             "symbol": "BTC/USDT",
         }
-        ctx.portfolio_manager.simulate_trade(test_trade)
+        await ctx.portfolio_manager.simulate_trade(test_trade)
         summary = ctx.portfolio_manager.get_trade_summary()
         ctx.logger.info(
             "Test simulated trade executed. Trade Summary: "
             + json.dumps(summary, default=str)
         )
-        test_trade_time = time.time()
 
     try:
         while ctx.running:
-            if ctx.config.get("paper_mode", False):
-                if time.time() - test_trade_time >= 5:
-                    ctx.logger.info(
-                        "Paper mode: simulation duration complete, shutting down."
-                    )
-                    break
             if ctx.health_monitor and ctx.health_monitor.should_emergency_shutdown():
                 ctx.logger.error("Emergency shutdown triggered")
                 break
-            await asyncio.sleep(1)
+            if ctx.ratchet_manager:
+                await ctx.ratchet_manager.ratchet()
+            await asyncio.sleep(60)
     except Exception as e:
         ctx.logger.error(f"Error in main loop: {str(e)}")
     finally:

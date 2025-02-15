@@ -1,8 +1,9 @@
 #! /usr/bin/env python3
 # src/database/database.py
 """
-Module: database/database.py
-Context manager for SQLite connections and helper functions to execute SQL queries with automatic commits.  
+Module: src.database.database
+Provides a production-grade database connection manager using SQLAlchemy.
+This module implements the DBConnection context manager for robust connection pooling, pre-ping, and error handling.
 """
 
 import asyncio
@@ -17,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiosqlite
 from aiosqlite import connect
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
 
 from utils.error_handler import DatabaseError, handle_error_async
 from utils.exceptions import DatabaseError
@@ -44,6 +47,32 @@ class QueryBuilder:
             json.dumps(trade.get("metadata")) if trade.get("metadata") else None,
         )
         return query, params
+
+
+class DBConnection:
+    def __init__(self, db_url: str):
+        self.db_url = db_url
+        try:
+            self.engine = create_engine(db_url, pool_pre_ping=True)
+            logger.info(f"Database engine created for {db_url}")
+        except Exception as e:
+            logger.error(f"Failed to create engine for {db_url}: {e}", exc_info=True)
+            raise
+        self.connection = None
+
+    def __enter__(self) -> Connection:
+        try:
+            self.connection = self.engine.connect()
+            logger.debug("Database connection established.")
+            return self.connection
+        except Exception as e:
+            logger.error(f"Error establishing database connection: {e}", exc_info=True)
+            raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.connection is not None:
+            self.connection.close()
+            logger.debug("Database connection closed.")
 
 
 class DatabaseConnection:
@@ -310,3 +339,25 @@ class DatabaseQueries:
         except Exception as e:
             self.logger.error(f"Unexpected error when retrieving all trades: {e}")
             return []
+
+
+def execute_query(db_url: str, query: str, params: dict = None) -> list:
+    """
+    Execute a parameterized SQL query using a production-grade DBConnection.
+
+    :param db_url: Database URL (e.g., 'sqlite:///data/trading.db')
+    :param query: SQL query to execute
+    :param params: Dictionary of parameters for the query
+    :return: List of dictionaries representing the query results
+    """
+    try:
+        with DBConnection(db_url) as conn:
+            result = conn.execute(text(query), params or {})
+            rows = result.fetchall()
+            columns = result.keys()
+            return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        logger.error(
+            f"Error executing query: {query} with params: {params}. {e}", exc_info=True
+        )
+        return []

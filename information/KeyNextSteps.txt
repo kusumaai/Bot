@@ -1,0 +1,3 @@
+Greatly improve the backtesting and backtester.py . The system should make this a core feature. The system should be able to boost learning by backtesting strategies, from the past trades, historial data, ccxt, the models, ga, sentiment  and use this to improve the signal generation and trading algorithm to ultimately create more profitable trades. It should allow the operator to backtest chosen custom and defined strategies, timeframes, stragegies and be able to optimize, and analyze the results of the backtests
+
+

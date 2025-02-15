@@ -52,6 +52,9 @@ class ExchangeInterface:
                     self.config = config
                     self.logger = logger
                     self.db_queries = db_queries
+                    from unittest.mock import AsyncMock
+
+                    self.exchange = AsyncMock()
 
                 async def initialize(self):
                     return True
@@ -187,6 +190,10 @@ class ExchangeInterface:
         except Exception as e:
             await handle_error_async(e, "ExchangeInterface.fetch_ticker", self.logger)
             return None
+
+    async def get_ticker(self, symbol: str) -> dict:
+        await self.exchange_manager.rate_limiter.acquire("market")
+        return await self.exchange_manager.exchange.fetch_ticker(symbol)
 
     async def close_position(self, symbol: str, amount: Decimal) -> bool:
         try:

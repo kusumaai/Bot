@@ -214,11 +214,12 @@ class PortfolioManager:
 
     # add a new position to the portfolio
     async def add_position(
-        self, symbol: str, size: Decimal, entry_price: Decimal
+        self, symbol: str, size: Decimal, entry_price: Decimal, trade_id: str = None
     ) -> bool:
         """
         Add a new position with thread safety.
         Validates input and risk limits before adding the position.
+        Optionally associates a trade_id with the position.
         """
         async with self._async_lock:
             try:
@@ -242,13 +243,16 @@ class PortfolioManager:
                     )
                     return False
 
-                self.positions[symbol] = Position(
+                new_position = Position(
                     symbol=symbol,
                     size=size,
                     entry_price=entry_price,
                     current_price=entry_price,
                     direction="long",  # Assuming long; adjust as needed
                 )
+                if trade_id:
+                    new_position.trade_id = trade_id
+                self.positions[symbol] = new_position
                 await self._update_portfolio_metrics()
                 return True
             except PortfolioError as e:
@@ -386,32 +390,68 @@ class PortfolioManager:
         """
         return len(self.positions)
 
-    def simulate_trade(self, trade_details: dict) -> None:
-        """Simulate execution of a trade in paper mode, record the trade, and update the portfolio balance."""
+    async def simulate_trade(self, trade_details: dict) -> None:
+        """Simulate execution of a trade in paper mode, record the trade, and update the open position accordingly."""
         from decimal import Decimal
 
-        # Record the trade details for later analysis
+        # Record the trade details for monitoring
         self.trade_history.append(trade_details)
-
-        # Update portfolio balance based on trade side
-        side = trade_details.get("side")
+        side = trade_details.get("side", "").lower()
+        symbol = trade_details.get("symbol")
         amount = Decimal(str(trade_details.get("amount", "0")))
         price = Decimal(str(trade_details.get("price", "0")))
 
         if side == "buy":
-            cost = amount * price
-            self.current_balance -= cost
-            self.logger.info(
-                f"Simulated BUY trade executed: cost={cost}, new balance={self.current_balance}"
-            )
+            # Open a new position
+            success = await self.add_position(symbol, amount, price)
+            if success:
+                self.logger.info(
+                    f"Simulated BUY executed: Opened position for {symbol} (amount={amount} at {price})."
+                )
+            else:
+                self.logger.error(f"Failed to open position for {symbol}.")
         elif side == "sell":
-            proceeds = amount * price
-            self.current_balance += proceeds
-            self.logger.info(
-                f"Simulated SELL trade executed: proceeds={proceeds}, new balance={self.current_balance}"
-            )
+            # Close an existing position if available
+            closed_position = self.close_position(symbol, price)
+            if closed_position:
+                self.logger.info(
+                    f"Simulated SELL executed: Closed position for {symbol} at {price}."
+                )
+            else:
+                self.logger.warning(f"No open position to close for {symbol}.")
         else:
             self.logger.warning(f"Unknown trade side: {side}")
+
+        # Record the trade in the database as an open trade (if not closed)
+        try:
+            from accounting.accounting import record_new_trade
+
+            order = {"id": trade_details.get("id", str(len(self.trade_history)))}
+            signal = {
+                "symbol": symbol,
+                "direction": side,
+                "entry_price": price,
+                "sl": trade_details.get("sl", 0),
+                "tp": trade_details.get("tp", 0),
+                "exchange": "paper",
+            }
+            ev = trade_details.get("ev", 0.0)
+            kelly_frac = trade_details.get("kelly_frac", 0.0)
+            position_size = trade_details.get("amount", 0)
+            record_new_trade(
+                order,
+                signal,
+                ev,
+                kelly_frac,
+                position_size,
+                self.ctx,
+                trade_source="paper",
+            )
+            self.logger.info(
+                "Simulated trade recorded in database as an open paper trade."
+            )
+        except Exception as e:
+            self.logger.error("Failed to record simulated trade in database: " + str(e))
 
     def get_trade_summary(self) -> dict:
         """Return summary of simulated trades, including starting balance, current balance, net profit and trade history."""
