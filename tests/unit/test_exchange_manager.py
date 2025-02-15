@@ -1,15 +1,17 @@
 #! /usr/bin/env python3
-#tests/unit/test_exchange_manager.py
+# tests/unit/test_exchange_manager.py
 """
 Module: tests.unit
 Provides unit testing functionality for the exchange manager module.
 """
-import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from src.exchanges.exchange_manager import ExchangeManager, RateLimiter, RateLimitConfig
-from src.utils.error_handler import ExchangeError, RateLimitExceeded
-from src.database.queries import DatabaseQueries
+
+import pytest
+
+from database.queries import DatabaseQueries
+from exchanges.exchange_manager import ExchangeManager, RateLimitConfig, RateLimiter
+from utils.error_handler import ExchangeError, RateLimitExceeded
 
 
 @pytest.fixture
@@ -23,11 +25,11 @@ def exchange_manager_fixture(logger, mocker):
     """Provide an ExchangeManager instance with mocked dependencies."""
     mock_db_queries = AsyncMock(spec=DatabaseQueries)
     manager = ExchangeManager(
-        exchange_id='binance',
-        api_key='test_key',
-        api_secret='test_secret',
+        exchange_id="binance",
+        api_key="test_key",
+        api_secret="test_secret",
         logger=logger,
-        db_queries=mock_db_queries
+        db_queries=mock_db_queries,
     )
     manager.exchange = AsyncMock()
     return manager
@@ -44,8 +46,10 @@ async def test_exchange_manager_initialization(exchange_manager_fixture):
 @pytest.mark.asyncio
 async def test_exchange_manager_initialize_failure(exchange_manager_fixture, mocker):
     """Test ExchangeManager initialization failure."""
-    exchange_manager_fixture.exchange.initialize.side_effect = ExchangeError("Initialization Failed")
-    
+    exchange_manager_fixture.exchange.initialize.side_effect = ExchangeError(
+        "Initialization Failed"
+    )
+
     with pytest.raises(ExchangeError, match="Initialization Failed"):
         await exchange_manager_fixture.initialize()
 
@@ -64,18 +68,23 @@ async def test_rate_limiter_within_limits(rate_limit_config):
 @pytest.mark.asyncio
 async def test_exchange_manager_rate_limit(exchange_manager_fixture):
     """Test ExchangeManager rate limiting."""
-    rate_limit_config = RateLimitConfig(max_requests=5, time_window=1)  # 5 requests per second
+    rate_limit_config = RateLimitConfig(
+        max_requests=5, time_window=1
+    )  # 5 requests per second
     limiter = RateLimiter(rate_limit_config)
     exchange_manager_fixture.rate_limiter = limiter
-    
+
     # Mock fetch_ticker
-    exchange_manager_fixture.exchange.fetch_ticker.return_value = {'symbol': 'BTC/USDT', 'price': '50000'}
-    
+    exchange_manager_fixture.exchange.fetch_ticker.return_value = {
+        "symbol": "BTC/USDT",
+        "price": "50000",
+    }
+
     # Execute 5 fetch_ticker within rate limit
     for _ in range(5):
-        ticker = await exchange_manager_fixture.get_ticker('BTC/USDT')
-        assert ticker == {'symbol': 'BTC/USDT', 'price': '50000'}
-    
+        ticker = await exchange_manager_fixture.get_ticker("BTC/USDT")
+        assert ticker == {"symbol": "BTC/USDT", "price": "50000"}
+
     # 6th request should exceed rate limit
     with pytest.raises(RateLimitExceeded):
-        await exchange_manager_fixture.get_ticker('BTC/USDT') 
+        await exchange_manager_fixture.get_ticker("BTC/USDT")

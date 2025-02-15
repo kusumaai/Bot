@@ -1,26 +1,31 @@
 #! /usr/bin/env python3
-#tests/unit/test_order_manager.py
+# tests/unit/test_order_manager.py
 """
 Module: tests.unit
 Provides unit testing functionality for the order manager module.
 """
 import logging
-import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
-from src.execution.order_manager import OrderManager
-from src.execution.exchange_interface import ExchangeInterface
-from src.utils.error_handler import ExchangeError, OrderError
-from src.database.queries import DatabaseQueries
+import pytest
+
+from database.queries import DatabaseQueries
+from execution.exchange_interface import ExchangeInterface
+from execution.order_manager import OrderManager
+from utils.error_handler import ExchangeError, OrderError
 
 
 @pytest.fixture
 def mock_exchange_interface():
     """Provide a mocked ExchangeInterface."""
     mock = MagicMock()
-    mock.execute_trade = AsyncMock(return_value={'success': False, 'error': 'Risk Validation Failed'})
-    mock.create_order = AsyncMock(return_value=None)  # Simulate failure by returning None or appropriate value
+    mock.execute_trade = AsyncMock(
+        return_value={"success": False, "error": "Risk Validation Failed"}
+    )
+    mock.create_order = AsyncMock(
+        return_value=None
+    )  # Simulate failure by returning None or appropriate value
     mock.cancel_trade = AsyncMock()
     mock.get_order_status = AsyncMock()
     return mock
@@ -45,9 +50,7 @@ def logger():
 def order_manager(mock_exchange_interface, db_queries, logger):
     """Provide an OrderManager instance."""
     return OrderManager(
-        exchange_interface=mock_exchange_interface,
-        db_queries=db_queries,
-        logger=logger
+        exchange_interface=mock_exchange_interface, db_queries=db_queries, logger=logger
     )
 
 
@@ -55,12 +58,12 @@ def order_manager(mock_exchange_interface, db_queries, logger):
 async def test_store_order_success(order_manager):
     """Test successful storage of an order."""
     order = {
-        'id': 'order127',
-        'symbol': 'BTC/USDT',
-        'side': 'buy',
-        'amount': Decimal('0.5'),
-        'price': Decimal('50000'),
-        'status': 'open'
+        "id": "order127",
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": Decimal("0.5"),
+        "price": Decimal("50000"),
+        "status": "open",
     }
     order_manager.db_queries.store_order.return_value = True
 
@@ -73,12 +76,12 @@ async def test_store_order_success(order_manager):
 async def test_store_order_failure(order_manager):
     """Test storage of an order failure due to database error."""
     order = {
-        'id': 'order128',
-        'symbol': 'ETH/USDT',
-        'side': 'sell',
-        'amount': Decimal('1'),
-        'price': Decimal('3000'),
-        'status': 'open'
+        "id": "order128",
+        "symbol": "ETH/USDT",
+        "side": "sell",
+        "amount": Decimal("1"),
+        "price": Decimal("3000"),
+        "status": "open",
     }
     order_manager.db_queries.store_order.side_effect = Exception("DB Error")
 
@@ -90,17 +93,17 @@ async def test_store_order_failure(order_manager):
 @pytest.mark.asyncio
 async def test_place_order_success(order_manager):
     """Test successful place_order method."""
-    mock_order_response = {'success': True, 'order_id': 'order129'}
-    mock_trade = {'id': 'order129', 'status': 'open'}
+    mock_order_response = {"success": True, "order_id": "order129"}
+    mock_trade = {"id": "order129", "status": "open"}
     order_manager.exchange_interface.execute_trade.return_value = mock_order_response
     order_manager.db_queries.store_order.return_value = True
 
     result = await order_manager.place_order(
-        symbol='BTC/USDT',
-        side='buy',
-        amount=Decimal('0.1'),
-        order_type='limit',
-        price=Decimal('50000')
+        symbol="BTC/USDT",
+        side="buy",
+        amount=Decimal("0.1"),
+        order_type="limit",
+        price=Decimal("50000"),
     )
     assert result is True
     order_manager.exchange_interface.execute_trade.assert_awaited_once()
@@ -111,37 +114,44 @@ async def test_place_order_success(order_manager):
 async def test_place_order_exchange_failure(order_manager, mock_exchange_interface):
     """Test order placement when exchange fails."""
     mock_exchange_interface.create_order.return_value = None  # Simulate failure
-    
+
     result = await order_manager.place_order(
-        symbol='BTC/USDT',
-        side='sell',
-        amount=Decimal('0.1'),
-        order_type='limit',
-        price=Decimal('48000')
+        symbol="BTC/USDT",
+        side="sell",
+        amount=Decimal("0.1"),
+        order_type="limit",
+        price=Decimal("48000"),
     )
-    
+
     assert result is False
     mock_exchange_interface.execute_trade.assert_not_awaited()
-    mock_exchange_interface.create_order.assert_awaited_once_with('BTC/USDT', 'sell', Decimal('0.1'), 'limit', Decimal('48000'))
+    mock_exchange_interface.create_order.assert_awaited_once_with(
+        "BTC/USDT", "sell", Decimal("0.1"), "limit", Decimal("48000")
+    )
     order_manager.db_queries.store_order.assert_not_awaited()
-    order_manager.logger.error.assert_called_with("Failed to place order for BTC/USDT: Exchange failure.")
+    order_manager.logger.error.assert_called_with(
+        "Failed to place order for BTC/USDT: Exchange failure."
+    )
 
 
 @pytest.mark.asyncio
 async def test_place_order_risk_failure(order_manager):
     """Test place_order when risk validation fails."""
-    order_manager.exchange_interface.execute_trade.return_value = {'success': False, 'error': 'Risk Validation Failed'}
+    order_manager.exchange_interface.execute_trade.return_value = {
+        "success": False,
+        "error": "Risk Validation Failed",
+    }
 
     result = await order_manager.place_order(
-        symbol='BTC/USDT',
-        side='buy',
-        amount=Decimal('0.2'),
-        order_type='limit',
-        price=Decimal('50000')
+        symbol="BTC/USDT",
+        side="buy",
+        amount=Decimal("0.2"),
+        order_type="limit",
+        price=Decimal("50000"),
     )
     assert result is False
     order_manager.exchange_interface.execute_trade.assert_awaited_once()
     order_manager.db_queries.store_order.assert_not_awaited()
     order_manager.logger.error.assert_called_with(
         "Failed to place order for BTC/USDT: Risk Validation Failed"
-    ) 
+    )

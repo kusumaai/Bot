@@ -1,17 +1,18 @@
 #! /usr/bin/env python3
-#tests/unit/test_system_init.py
+# tests/unit/test_system_init.py
 """
 Module: tests.unit
 Provides unit testing functionality for the system initialization module.
-""" 
+"""
 import logging
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.startup.system_init import SystemInitializer
-from src.database.connection import DatabaseConnection
-from src.exchanges.exchange_manager import ExchangeManager
-from src.utils.error_handler import handle_error, handle_error_async
+import pytest
+
+from database.connection import DatabaseConnection
+from exchanges.exchange_manager import ExchangeManager
+from startup.system_init import SystemInitializer
+from utils.error_handler import handle_error, handle_error_async
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def system_initializer(mock_db_connection, mock_exchange_manager, logger):
     return SystemInitializer(
         db_connection=mock_db_connection,
         exchange_manager=mock_exchange_manager,
-        logger=logger
+        logger=logger,
     )
 
 
@@ -58,7 +59,9 @@ async def test_initialize_success(system_initializer):
 @pytest.mark.asyncio
 async def test_initialize_database_failure(system_initializer):
     """Test system initialization failure due to database connection error."""
-    system_initializer.db_connection.verify_connection.side_effect = Exception("DB Connection Failed")
+    system_initializer.db_connection.verify_connection.side_effect = Exception(
+        "DB Connection Failed"
+    )
 
     result = await system_initializer.initialize_system()
     assert result is False
@@ -72,7 +75,9 @@ async def test_initialize_database_failure(system_initializer):
 @pytest.mark.asyncio
 async def test_initialize_exchange_failure(system_initializer):
     """Test system initialization failure due to exchange connection error."""
-    system_initializer.exchange_manager.verify_exchange_connection.side_effect = Exception("Exchange Unreachable")
+    system_initializer.exchange_manager.verify_exchange_connection.side_effect = (
+        Exception("Exchange Unreachable")
+    )
 
     result = await system_initializer.initialize_system()
     assert result is False
@@ -80,4 +85,4 @@ async def test_initialize_exchange_failure(system_initializer):
     system_initializer.exchange_manager.verify_exchange_connection.assert_awaited_once()
     system_initializer.logger.error.assert_called_with(
         "Failed to initialize system: Exchange Unreachable"
-    ) 
+    )
