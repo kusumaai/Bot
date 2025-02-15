@@ -17,6 +17,7 @@ from utils.error_handler import handle_error, handle_error_async
 from utils.exceptions import (
     MathError,
     RiskCalculationError,
+    RiskError,
     RiskManagerError,
     ValidationError,
 )
@@ -45,6 +46,8 @@ class RiskManager:
         self._last_risk_check = time.time()
         self._daily_loss_start = datetime.now().date()
         self._daily_loss = Decimal("0")
+        self.current_drawdown = Decimal("0")
+        self.daily_loss = Decimal("0")
 
     async def check_risk_limits(self, portfolio_value: Decimal) -> bool:
         """Check if any risk limits are breached"""

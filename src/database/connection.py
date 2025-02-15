@@ -1,32 +1,34 @@
 #! /usr/bin/env python3
-#src/database/connection.py
+# src/database/connection.py
 """
 Module: database/connection.py
 Provides database connection management.
 """
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional, List, Any, Dict
-import aiosqlite
-import logging
 import asyncio
+import logging
+import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-import sqlite3
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+import aiosqlite
 
 from utils.error_handler import DatabaseError, ErrorHandler
 
 logger = logging.getLogger(__name__)
 
+
 class DatabaseConnection:
     """Manages database connections with proper pooling and error handling"""
-    
-    def __init__(self, db_path: str):
+
+    def __init__(self, db_path: str, logger: Optional[logging.Logger] = None):
         self.db_path = db_path
         self.pool = None
         self._lock = asyncio.Lock()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger or logging.getLogger(__name__)
         self.connection = None
-        
+
     async def initialize(self) -> bool:
         """Initialize the database connection"""
         try:
@@ -52,6 +54,9 @@ class DatabaseConnection:
         except aiosqlite.Error as e:
             self.logger.error(f"Database connection error: {e}")
             raise DatabaseError(f"Database connection error: {e}") from e
+        except Exception as e:
+            self.logger.error(f"Unexpected database error: {e}")
+            raise DatabaseError(f"Unexpected database error: {e}") from e
 
     async def execute_sql(self, query: str, params: List[Any] = None) -> Any:
         """Execute a SQL query with proper error handling"""
@@ -69,9 +74,10 @@ class DatabaseConnection:
         """Create necessary database tables if they don't exist"""
         with self.connection:
             cursor = self.connection.cursor()
-            
+
             # Add your table creation SQL statements here
-            cursor.execute('''
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -81,7 +87,8 @@ class DatabaseConnection:
                     quantity REAL NOT NULL,
                     status TEXT NOT NULL
                 )
-            ''')
+            """
+            )
             # Add more table creation statements as needed
 
     async def close(self):
@@ -91,10 +98,7 @@ class DatabaseConnection:
             self.connection = None
 
     async def execute(
-        self,
-        query: str,
-        params: Optional[List[Any]] = None,
-        fetch: bool = False
+        self, query: str, params: Optional[List[Any]] = None, fetch: bool = False
     ) -> Optional[List[Dict[str, Any]]]:
         """Execute a query with proper error handling"""
         async with self.get_connection() as conn:
@@ -105,31 +109,29 @@ class DatabaseConnection:
                     return [dict(row) for row in rows]
                 await conn.commit()
                 return None
-                
+
             except Exception as e:
                 await conn.rollback()
                 await self.error_handler.handle_error(
-                    e, "DatabaseConnection.execute",
-                    metadata={
-                        "query": query,
-                        "params": params,
-                        "fetch": fetch
-                    }
+                    e,
+                    "DatabaseConnection.execute",
+                    metadata={"query": query, "params": params, "fetch": fetch},
                 )
-                raise DatabaseError("Query execution failed") from e 
+                raise DatabaseError("Query execution failed") from e
+
 
 class DBConnection:
     def __init__(self, pool: Any):
         self.pool = pool
         self.conn = None
         self.tx = None
-        
+
     async def __aenter__(self):
         self.conn = await self.pool.acquire()
         self.tx = self.conn.transaction()
         await self.tx.start()
         return self
-        
+
     async def __aexit__(self, exc_type, exc, tb):
         try:
             if exc_type is None:
@@ -138,7 +140,7 @@ class DBConnection:
                 await self.tx.rollback()
         finally:
             await self.pool.release(self.conn)
-            
+
     async def execute_sql(self, query: str, params: tuple) -> List[Any]:
         """Execute SQL with proper parameter binding"""
-        return await self.conn.fetch(query, *params) 
+        return await self.conn.fetch(query, *params)

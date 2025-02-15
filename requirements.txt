@@ -9,7 +9,7 @@ ccxt>=2.4.0
 aiohttp>=3.8.1
 
 # Technical analysis
-pandas_ta>=0.3.14b0
+pandas_ta>=0.3.16
 
 # System monitoring
 psutil>=6.1.1

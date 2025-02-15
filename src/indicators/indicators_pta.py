@@ -1,25 +1,28 @@
 #! /usr/bin/env python3
-#src/indicators/indicators_pta.py
+# src/indicators/indicators_pta.py
 """
 Module: src.indicators
 Provides technical indicator calculations
 """
+from datetime import datetime
+from importlib.metadata import version
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 import pandas as pd
 import pandas_ta as ta
-import numpy as np
-from typing import List, Dict, Any, Optional
-from datetime import datetime
 
 from utils.error_handler import handle_error
+
 
 def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
     """
     Compute technical indicators for the provided candlestick data.
-    
+
     Args:
         candles (list): Each element is [timestamp, open, high, low, close, volume, (optional)ATR_14].
         ctx (object): Context with config and logger.
-    
+
     Returns:
         pd.DataFrame: DataFrame with original columns plus new indicator columns.
                      If insufficient rows or error, returns an empty DataFrame.
@@ -27,10 +30,23 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
     try:
         # Drop extra ATR column if present
         if candles and len(candles[0]) == 7:
-            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "ATR_14"])
+            df = pd.DataFrame(
+                candles,
+                columns=[
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "ATR_14",
+                ],
+            )
             df.drop(columns=["ATR_14"], inplace=True)
         else:
-            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df = pd.DataFrame(
+                candles, columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
 
         # Get indicator settings from config
         ind_cfg = ctx.config.get("indicators", {})
@@ -47,13 +63,19 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
         stoch_smooth = ind_cfg.get("stoch_smooth", 3)
 
         # Check minimum data requirements
-        min_rows_needed = max(ema_periods + [rsi_period, macd_slow, atr_period, bb_length, stoch_k])
+        min_rows_needed = max(
+            ema_periods + [rsi_period, macd_slow, atr_period, bb_length, stoch_k]
+        )
         if len(df) < min_rows_needed:
-            ctx.logger.warning(f"Insufficient data for indicators. Need {min_rows_needed} rows, got {len(df)}")
+            ctx.logger.warning(
+                f"Insufficient data for indicators. Need {min_rows_needed} rows, got {len(df)}"
+            )
             return pd.DataFrame()
 
         # Convert timestamp and sort
-        df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True, errors="coerce")
+        df["datetime"] = pd.to_datetime(
+            df["timestamp"], unit="ms", utc=True, errors="coerce"
+        )
         df.sort_values("datetime", inplace=True)
         df.reset_index(drop=True, inplace=True)
 
@@ -71,7 +93,7 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
             close=df["close"],
             k=stoch_k,
             d=stoch_d,
-            smooth_k=stoch_smooth
+            smooth_k=stoch_smooth,
         )
         if stoch is not None and not stoch.empty:
             df["STOCH_K"] = stoch[f"STOCHk_{stoch_k}_{stoch_d}_{stoch_smooth}"]
@@ -82,7 +104,9 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
             ctx.logger.warning("Stochastic oscillator could not be computed")
 
         # Calculate MACD
-        macd_df = ta.macd(df["close"], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+        macd_df = ta.macd(
+            df["close"], fast=macd_fast, slow=macd_slow, signal=macd_signal
+        )
         if macd_df is not None and not macd_df.empty:
             df["MACD"] = macd_df[f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"]
             df["MACDs"] = macd_df[f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"]
@@ -92,7 +116,9 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
             ctx.logger.warning("MACD could not be computed")
 
         # Calculate ATR
-        df[f"ATR_{atr_period}"] = ta.atr(df["high"], df["low"], df["close"], length=atr_period)
+        df[f"ATR_{atr_period}"] = ta.atr(
+            df["high"], df["low"], df["close"], length=atr_period
+        )
 
         # Calculate Bollinger Bands
         bb = ta.bbands(df["close"], length=bb_length, std=bb_std)
@@ -108,10 +134,23 @@ def compute_indicators(candles: list, ctx: object) -> pd.DataFrame:
 
         # Validate output
         expected_cols = [
-            "timestamp", "open", "high", "low", "close", "volume", "datetime",
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "datetime",
             *(f"EMA_{p}" for p in ema_periods),
-            f"RSI_{rsi_period}", "MACD", "MACDs", f"ATR_{atr_period}",
-            "BBL", "BBM", "BBU", "STOCH_K", "STOCH_D"
+            f"RSI_{rsi_period}",
+            "MACD",
+            "MACDs",
+            f"ATR_{atr_period}",
+            "BBL",
+            "BBM",
+            "BBU",
+            "STOCH_K",
+            "STOCH_D",
         ]
         missing_cols = [c for c in expected_cols if c not in df.columns]
         if missing_cols:
