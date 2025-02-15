@@ -1,5 +1,9 @@
 #! /usr/bin/env python3
-#test risk manager
+#tests/unit/test_risk_manager.py
+"""
+Module: test_risk_manager.py
+Unit tests for the RiskManager class.
+"""
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
@@ -10,6 +14,7 @@ from src.risk.limits import RiskLimits
 from src.database.queries import DatabaseQueries
 from src.utils.error_handler import RiskError
 from src.utils.exceptions import MathError, RiskCalculationError
+from trading.portfolio import PortfolioManager
 
 #risk limits for the risk manager tests
 @pytest.fixture
@@ -178,7 +183,7 @@ def risk_manager(risk_limits, mock_portfolio_manager, logger):
     asyncio.run(risk_mgr.initialize())
     return risk_mgr
 
-
+#test validate trade within limits for the risk manager tests
 @pytest.mark.asyncio
 async def test_validate_trade_within_limits(risk_manager):
     """Test validating a trade within risk limits."""
@@ -191,7 +196,7 @@ async def test_validate_trade_within_limits(risk_manager):
     assert is_valid is True
     assert error is None
 
-
+#test validate trade below min size for the risk manager tests
 @pytest.mark.asyncio
 async def test_validate_trade_below_min_size(risk_manager):
     """Test validating a trade below minimum position size."""
