@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/execution/order_manager.py
+"""
+Module: src.execution
+Provides order management.
+"""
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 import asyncio

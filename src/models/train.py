@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/models/train.py
 """
-Module: models/train.py
-Handles ML model training with proper error handling and validation
+Module: src.models
+Provides model training
 """
-
 import os
 import json
 import pickle

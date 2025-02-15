@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#tests/conftest.py
 """
-Module: tests/conftest.py
-Test fixtures and configuration
+Module: tests
+Provides unit testing functionality for the tests module.
 """
 import os
 import sys

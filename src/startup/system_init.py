@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-# src/startup/system_init.py   
+#! /usr/bin/env python3
+#src/startup/system_init.py
 """
-Module: startup/system_init.py
-System initialization and component setup
+Module: src.startup
+Provides system initialization and component setup.
 """
 #import required modules
 from typing import List, Dict, Any

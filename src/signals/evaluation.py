@@ -1,6 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/signals/evaluation.py
 """
-signals/evaluation.py - Strategy evaluation and metrics calculation
+Module: src.signals
+Provides signal evaluation and metrics calculation.
 """
 import numpy as np
 from decimal import Decimal

@@ -1,10 +1,9 @@
-#!/usr/bin/env python3      
-# tests/unit/test_signal_generation.py
+#! /usr/bin/env python3 
+#tests/unit/test_signal_generation.py
 """
-Module: test_signal_generation.py
-Unit tests for signal generation functionality
+Module: tests.unit
+Provides unit testing functionality for the signal generation module.
 """
-#import required modules
 import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock

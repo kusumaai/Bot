@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_exchange_interface.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the exchange interface module.
+""" 
 import pytest
 from decimal import Decimal
 import logging

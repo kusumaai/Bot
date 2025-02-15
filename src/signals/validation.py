@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/signals/validation.py
+"""
+Module: src.signals
+Provides signal validation.
+"""
 from dataclasses import dataclass
 from typing import Dict, Any
 from decimal import Decimal

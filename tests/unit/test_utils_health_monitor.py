@@ -1,7 +1,9 @@
 #! /usr/bin/env python3
-# -*- coding: utf-8 -*-
-#test_utils_health_monitor.py
-"""Test health monitor"""
+#tests/unit/test_utils_health_monitor.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the health monitor module.
+"""
 import logging
 import pytest
 import asyncio

@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/exchanges/exchange_manager.py
 """
 Module: exchanges/exchange_manager.py
 Manages exchange connections and operations with proper rate limiting and error handling.

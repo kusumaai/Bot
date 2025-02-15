@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_execution_order_manager.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the execution order manager module.
+"""
 import logging
 import pytest
 from decimal import Decimal

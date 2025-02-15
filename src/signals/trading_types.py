@@ -1,6 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/signals/trading_types.py
 """
-signals/trading_types.py - Core data types for trading system
+Module: src.signals
+Provides trading types.
 """
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional

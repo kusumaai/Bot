@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/config/validation.py
+"""
+Module: src.config
+Provides configuration validation.
+"""
 from dataclasses import dataclass
 from typing import Any, Dict
 from src.bot_types.base_types import Validatable, ValidationResult

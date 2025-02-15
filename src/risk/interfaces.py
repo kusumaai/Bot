@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/risk/interfaces.py
 """
-Module: risk/interfaces.py
-Core interfaces for risk management components
+Module: src.risk
+Provides risk management interfaces.
 """
-
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple

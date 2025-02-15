@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 import pytest
 from decimal import Decimal
 from src.risk.manager import RiskManager

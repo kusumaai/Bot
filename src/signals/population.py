@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/signals/population.py
 """
-signals/population.py - GA population management with enhanced risk controls
+Module: src.signals
+Provides population management with enhanced risk controls.
 """
-
 import random
 from typing import List, Dict, Any, Optional, Tuple
 from decimal import Decimal

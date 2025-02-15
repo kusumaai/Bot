@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_data_candles.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the data candles module.
+"""
 import logging
 import pytest
 import asyncio

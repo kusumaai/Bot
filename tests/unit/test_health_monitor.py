@@ -1,4 +1,9 @@
-import pytest
+#! /usr/bin/env python3
+#tests/unit/test_health_monitor.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the health monitor module.
+"""
 from decimal import Decimal
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch

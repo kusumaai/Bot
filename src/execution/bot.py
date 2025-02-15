@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/execution/bot.py
 """
-Module: execution/bot.py
-Main trading bot orchestrator with paper/live trading support and proper risk management.
+Module: src.execution
+Main trading bot orchestrator with paper/live trading support.
 """
 import os
 import json
@@ -49,7 +50,7 @@ class TradingContext:
 async def initialize_components(ctx: TradingContext) -> bool:
     """Initialize all components in the correct order"""
     try:
-        # 1. Database first
+        #Database first
         ctx.db_connection = DatabaseConnection(
             ctx.config.get("database", {}).get("path", "data/trading.db")
         )
@@ -57,43 +58,43 @@ async def initialize_components(ctx: TradingContext) -> bool:
             ctx.logger.error("Failed to initialize database connection")
             return False
 
-        # 2. Risk Manager (needed by other components)
+        #Risk Manager (needed by other components)
         ctx.risk_manager = RiskManager(ctx)
         if not await ctx.risk_manager.initialize():
             ctx.logger.error("Failed to initialize risk manager")
             return False
 
-        # 3. Portfolio Manager
+        #Portfolio Manager
         ctx.portfolio_manager = PortfolioManager(ctx)
         if not await ctx.portfolio_manager.initialize():
             ctx.logger.error("Failed to initialize portfolio manager")
             return False
 
-        # 4. Exchange Interface
+        #Exchange Interface
         ctx.exchange_interface = ExchangeInterface(ctx)
         if not await ctx.exchange_interface.initialize():
             ctx.logger.error("Failed to initialize exchange interface")
             return False
 
-        # 5. Market Data
+        #Market Data
         ctx.market_data = MarketData(ctx)
         if not await ctx.market_data.initialize():
             ctx.logger.error("Failed to initialize market data")
             return False
 
-        # 6. Circuit Breaker
+        #Circuit Breaker
         ctx.circuit_breaker = CircuitBreaker(ctx)
         if not await ctx.circuit_breaker.initialize():
             ctx.logger.error("Failed to initialize circuit breaker")
             return False
 
-        # 7. Health Monitor
+        #Health Monitor
         ctx.health_monitor = HealthMonitor(ctx)
         if not await ctx.health_monitor.initialize():
             ctx.logger.error("Failed to initialize health monitor")
             return False
 
-        # 8. Ratchet Manager
+        #Ratchet Manager
         ctx.ratchet_manager = RatchetManager(ctx)
         if not await ctx.ratchet_manager.initialize():
             ctx.logger.error("Failed to initialize ratchet manager")

@@ -1,17 +1,23 @@
+#! /usr/bin/env python3
+#src/utils/data_validator.py
+"""
+Module: src.utils
+Provides data validation functionality.
+"""
 from typing import Tuple, Union, Optional
 from decimal import Decimal
 import logging
 import pandas as pd
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import MarketDataValidationError
-
+#data validator class that validates the data
 class DataValidator:
     """Validates trade and order parameters to ensure integrity."""
 
     def __init__(self, logger=None):
         self.logger = logger or logging.getLogger(__name__)
         self.nh = NumericHandler()
-
+    #validate the order parameters
     def validate_order_params(
         self,
         symbol: str,
@@ -38,7 +44,7 @@ class DataValidator:
         except Exception as e:
             self.logger.error(f"Order validation failed: {e}")
             return False, str(e)
-
+    #validate the market data
     def validate_market_data(self, df: pd.DataFrame) -> bool:
         """Validate market data."""
         try:
@@ -54,7 +60,7 @@ class DataValidator:
         except Exception as e:
             self.logger.error(f"Market data validation failed: {e}")
             return False
-
+    #validate the trade parameters  
     def validate_trade_parameters(self, data: dict):
         required_fields = ['symbol', 'amount', 'price', 'side']
         for field in required_fields:

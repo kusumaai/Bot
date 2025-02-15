@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/database/init_db.py    
 """
 Database initialization script
 Creates a fresh database with schema matching the codebase

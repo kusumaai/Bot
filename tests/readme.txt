@@ -32,7 +32,6 @@ pytest -v tests/
 ```
 
 Writing Tests
-
 -------------
 
 1. Unit tests go in tests/unit/

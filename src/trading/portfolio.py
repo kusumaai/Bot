@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-#trading/portfolio.py
+#! /usr/bin/env python3
+#src/trading/portfolio.py
 """
-Module: portfolio.py
-Merged Portfolio management with proper risk tracking and balance updating from the database.
+Module: src.trading
+Provides portfolio management functionality.
 """
 #import the necessary libraries
 import time

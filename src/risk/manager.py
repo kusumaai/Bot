@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/risk/manager.py
 """
-Module: risk/manager.py
-Core risk management functionality
+Module: src.risk
+Provides risk management functionality.
 """
-
 from decimal import Decimal, InvalidOperation, DivisionByZero
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass

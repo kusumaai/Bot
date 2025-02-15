@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_trade_signals.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the trade signals module.
+""" 
 import pytest
 from decimal import Decimal
 

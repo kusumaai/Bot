@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
-# tests/unit/test_validation_tests.py
+#! /usr/bin/env python3
+#tests/unit/test_validation_tests.py
 """
-validation_tests.py - Comprehensive validation suite for trading bot
+Module: tests.unit
+Provides unit testing functionality for the validation tests module.
 """
 import asyncio
 import logging

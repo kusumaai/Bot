@@ -1,10 +1,16 @@
+#! /usr/bin/env python3
+#src/config/settings.py
+"""
+Module: src.config
+Provides configuration management.
+"""
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Type
 from decimal import Decimal
 import yaml
 import logging
 from dataclasses import dataclass
-
+from bot_types.base_types import ValidationResult
 @dataclass
 class DatabaseSettings:
     path: str

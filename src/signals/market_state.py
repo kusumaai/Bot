@@ -1,7 +1,9 @@
+#! /usr/bin/env python3
+#src/signals/market_state.py
 """
-signals/market_state.py - Market state analysis functions
+Module: src.signals
+Provides market state analysis functions.
 """
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Any

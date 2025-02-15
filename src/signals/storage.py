@@ -1,6 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3 
+#src/signals/storage.py
 """
-signals/storage.py - Database operations for trading rules
+Module: src.signals
+Provides database operations for trading rules.
 """
 import uuid
 import json

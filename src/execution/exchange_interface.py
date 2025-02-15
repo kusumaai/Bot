@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/execution/exchange_interface.py
 """
-Module: execution/exchange_interface.py
-Handles all exchange interactions with proper error handling and rate limiting.
-This version removes duplicate initialize methods and uses the consolidated ExchangeManager.
+Module: src.execution
+Handles all exchange interactions.
 """
-
 import time
 import asyncio
 from decimal import Decimal

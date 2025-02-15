@@ -1,7 +1,8 @@
-# tests/__init__.py
+#! /usr/bin/env python3
+#__init__.py
 """
-Test package initialization.
-Ensures the root directory is in the Python path.
+Module: tests
+Provides unit testing functionality for the tests module.
 """
 import os
 import sys
@@ -50,10 +51,10 @@ def test_context() -> Any:
 
 # tests/README.md
 """
-KillaBot Test Suite
+Test Suite
 ==================
 
-This directory contains the test suite for the KillaBot trading system.
+This directory contains the test suite for the Bot.
 
 Directory Structure:
 - unit/: Unit tests for individual components

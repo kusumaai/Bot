@@ -1,4 +1,9 @@
-import pytest
+#! /usr/bin/env python3
+#tests/unit/test_logger_setup.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the logger setup module.
+"""
 import logging
 import os
 from unittest.mock import patch, MagicMock

@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_exchange_manager.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the exchange manager module.
+"""
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock

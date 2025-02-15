@@ -1,7 +1,10 @@
 #! /usr/bin/env python3
-# -*- coding: utf-8 -*-
-#numeric_handler.py
-"""Handles numerical operations and conversions"""
+#src/utils/numeric_handler.py
+"""
+Module: src.utils
+Provides numerical handling functionality.
+Maybe needs to merge with numeric.py
+"""
 from decimal import Decimal, InvalidOperation, DivisionByZero, ROUND_HALF_UP
 import logging
 from typing import Any, Optional, Union

@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/risk/limits.py
 """
-Module: risk/limits.py
-Core risk limits and validation
+Module: src.risk
+Provides risk limits and validation.
 """
-
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple

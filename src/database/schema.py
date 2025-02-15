@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/database/schema.py
+"""
+Module: database/schema.py
+Provides database schema definitions.
+"""
 import logging
 
 

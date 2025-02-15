@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/utils/rate_limiter.py
+"""
+Module: src.utils
+Provides rate limiting functionality.
+""" 
 import asyncio
 import logging
 import time

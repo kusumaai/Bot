@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/utils/helpers.py
 """
-Module: utils/helpers.py
-Common helper functions for trading system
+Module: src.utils
+Provides helper functions for trading system.
 """
-
 import numpy as np
 from typing import Any, List, Dict, Tuple
 from decimal import Decimal

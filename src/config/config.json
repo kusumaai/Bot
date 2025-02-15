@@ -11,7 +11,6 @@
   "max_position_pct": 10.0,
   "take_profit_pct": 1.0,
   "stop_loss_pct": 0.5,
-  
   "ratchet_thresholds": [1.0, 2.0, 3.0],
   "ratchet_lock_ins": [0.3, 0.6, 0.9],
   "risk_factor": 0.025,

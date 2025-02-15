@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/utils/error_handler.py
 """
-Module: utils/error_handler.py
-Centralized error handling utility with database persistence and error aggregation
+Module: src.utils
+Provides error handling functionality.
 """
-
 import logging
 import traceback
 from typing import Optional, Dict, Any, Type, List, Union

@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/execution/market_data.py
 """
-Module: execution/market_data.py
-Handles loading and processing of market data with proper error handling
+Module: src.execution
+Provides market data management.
 """
 
 import pandas as pd

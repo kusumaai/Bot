@@ -1,3 +1,10 @@
+#! /usr/bin/env python3
+#src/trading/exceptions.py
+"""
+Module: src.trading
+Provides customtrading exceptions.
+"""
+
 class PositionError(Exception):
     pass
 

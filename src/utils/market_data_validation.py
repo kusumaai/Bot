@@ -1,8 +1,8 @@
 #! /usr/bin/env python3
-# src/utils/market_data_validation.py
+#src/utils/market_data_validation.py
 """
-Module: market_data_validation.py
-Validation utilities for market data
+Module: src.utils
+Provides market data validation functionality.
 """
 #import required modules
 from decimal import Decimal

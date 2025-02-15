@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_execution_main_loop.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the execution main loop module.
+"""
 import asyncio
 from decimal import Decimal
 import pytest

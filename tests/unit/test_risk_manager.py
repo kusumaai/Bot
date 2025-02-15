@@ -1,8 +1,8 @@
 #! /usr/bin/env python3
 #tests/unit/test_risk_manager.py
 """
-Module: test_risk_manager.py
-Unit tests for the RiskManager class.
+Module: tests.unit
+Provides unit testing functionality for the risk manager module.
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock

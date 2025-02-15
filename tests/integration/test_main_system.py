@@ -1,3 +1,10 @@
+#! /usr/bin/env python3
+#tests/integration/test_main_system.py
+"""
+Module: tests.integration
+Provides integration testing functionality for the main system.
+Maybe needs to merge with test_system_integration_full.py
+"""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from decimal import Decimal

@@ -2,7 +2,7 @@
 """
 Module: accounting/accounting.py
 """
-
+#import the necessary libraries
 from typing import Any, List, Dict, Optional
 from decimal import Decimal
 from utils.error_handler import handle_error, handle_error_async
@@ -11,7 +11,7 @@ from utils.exceptions import DatabaseError
 import asyncio
 import time
 
-
+#validate the account for the trading bot
 def validate_account(signal: Dict[str, Any], ctx: Any) -> bool:
     """Validate if account has sufficient free balance."""
     try:
@@ -33,7 +33,7 @@ def validate_account(signal: Dict[str, Any], ctx: Any) -> bool:
         handle_error(e, context="Accounting.validate_account", logger=ctx.logger)
         return False
 
-
+#get the free balance for the trading bot
 def get_free_balance(exchange: str, ctx: Any) -> Decimal:
     """Get available balance for trading."""
     try:
@@ -59,7 +59,7 @@ def get_free_balance(exchange: str, ctx: Any) -> Decimal:
         handle_error(e, context="Accounting.get_free_balance", logger=ctx.logger)
         return Decimal('0')
 
-
+#record a new trade for the trading bot
 def record_new_trade(
     order: Dict[str, Any],
     signal: Dict[str, Any],
@@ -121,7 +121,7 @@ def record_new_trade(
         handle_error(e, context="Accounting.record_new_trade", logger=ctx.logger)
         return False
 
-
+#update the trade result for the trading bot
 def update_trade_result(trade_id: str, net_pnl: float, ctx: Any) -> bool:
     """Update trade result and release used balance."""
     try:
@@ -142,8 +142,9 @@ def update_trade_result(trade_id: str, net_pnl: float, ctx: Any) -> bool:
         asyncio.create_task(handle_error_async(e, "Accounting.update_trade_result", ctx.logger))
         return False
 
-
+#update the trade stop for the trading bot
 def update_trade_stop(trade_id: str, new_sl: float, ctx: Any) -> None:
+    """Update the stop loss for a trade."""
     try:
         with DatabaseConnection(ctx.db_pool) as conn:
             sql = "UPDATE trades SET sl = ? WHERE id = ?"
@@ -151,8 +152,9 @@ def update_trade_stop(trade_id: str, new_sl: float, ctx: Any) -> None:
     except Exception as e:
         handle_error(e, context="Accounting.update_trade_stop", logger=ctx.logger)
 
-
+#fetch the open trades for the trading bot
 def fetch_open_trades(ctx: Any) -> List[Dict[str, Any]]:
+    """Fetch all open trades from the database."""
     try:
         with DatabaseConnection(ctx.db_pool) as conn:
             sql = (
@@ -166,8 +168,9 @@ def fetch_open_trades(ctx: Any) -> List[Dict[str, Any]]:
         handle_error(e, context="Accounting.fetch_open_trades", logger=ctx.logger)
         return []
 
-
+#update the daily performance for the trading bot
 def update_daily_performance(ctx: Any) -> None:
+    """Update daily performance statistics."""
     try:
         with DatabaseConnection(ctx.db_pool) as conn:
             sql = (
@@ -193,6 +196,7 @@ def update_daily_performance(ctx: Any) -> None:
     except Exception as e:
         handle_error(e, context="Accounting.update_daily_performance", logger=ctx.logger)
 
+#log the performance summary for the trading bot    
 def log_performance_summary(ctx: Any) -> None:
     """Log daily performance summary with better formatting"""
     try:

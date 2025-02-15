@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_portfolio_manager.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the portfolio manager module.
+"""
 import pytest
 from decimal import Decimal
 from unittest.mock import MagicMock

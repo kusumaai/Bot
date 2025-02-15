@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/indicators/quality_monitor.py
 """
-Module: indicators/quality_monitor.py
-Data quality monitoring for market data and indicators
+Module: src.indicators
+Provides data quality monitoring.
 """
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List
 import logging
 from utils.error_handler import handle_error
-
+#quality check class that evaluates the quality of the provided DataFrame with smart handling of indicators
 def quality_check(df: pd.DataFrame, ctx: Optional[Any] = None) -> Dict[str, Any]:
     """
     Evaluate the quality of the provided DataFrame with smart handling of indicators.

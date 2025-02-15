@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/integration/test_exchange.py
+"""
+Module: tests.integration
+Provides integration testing functionality for the exchange.
+"""
 import pytest
 from decimal import Decimal
 import logging
@@ -13,7 +19,7 @@ from src.risk.manager import RiskManager
 from src.risk.limits import RiskLimits
 from src.database.queries import DatabaseQueries
 
-    
+#exchange credentials fixture
 @pytest.fixture
 def exchange_credentials():
     """Provide exchange credentials for testing."""
@@ -23,7 +29,7 @@ def exchange_credentials():
         'exchange_id': 'binance'
     }
 
-
+#mock rate limiter
 @pytest.fixture
 def mock_rate_limiter():
     """Provide a mocked RateLimiter."""
@@ -34,7 +40,7 @@ def mock_rate_limiter():
         'position': RateLimitConfig(10, 60)
     })
 
-
+#mock exchange manager
 @pytest.fixture
 def mock_exchange_manager(exchange_credentials, mock_rate_limiter, logger):
     """Provide a mocked ExchangeManager."""
@@ -48,7 +54,7 @@ def mock_exchange_manager(exchange_credentials, mock_rate_limiter, logger):
     manager.exchange = AsyncMock()
     return manager
 
-
+#exchange interface fixture
 @pytest.fixture
 async def exchange_interface_fixture(mock_exchange_manager, risk_manager, db_queries, logger):
     """Provide a configured ExchangeInterface fixture."""
@@ -65,7 +71,7 @@ async def exchange_interface_fixture(mock_exchange_manager, risk_manager, db_que
         risk_manager=risk_manager,
         db_queries=db_queries
     )
-    
+    #exchange interface
     exchange_interface = ExchangeInterface(ctx)
     with patch.object(exchange_interface.exchange_manager, 'initialize', AsyncMock(return_value=True)):
         with patch.object(exchange_interface.exchange_manager.exchange, 'create_order', AsyncMock(return_value={
@@ -79,8 +85,9 @@ async def exchange_interface_fixture(mock_exchange_manager, risk_manager, db_que
             assert initialized
     return exchange_interface
 
-
+#test fetch ticker success
 @pytest.mark.integration
+#test asyncio
 @pytest.mark.asyncio
 async def test_fetch_ticker_success(exchange_interface_fixture):
     """Test successful fetching of ticker data."""
@@ -91,7 +98,7 @@ async def test_fetch_ticker_success(exchange_interface_fixture):
     assert ticker == mock_ticker
     exchange_interface_fixture.exchange_manager.exchange.fetch_ticker.assert_awaited_once_with("BTC/USDT")
 
-
+#test fetch ticker exchange error
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_fetch_ticker_exchange_error(exchange_interface_fixture):
@@ -101,8 +108,9 @@ async def test_fetch_ticker_exchange_error(exchange_interface_fixture):
     with pytest.raises(ExchangeError, match="API Error"):
         await exchange_interface_fixture.get_ticker("BTC/USDT")
 
-
+#test execute trade limit order success
 @pytest.mark.integration
+#test asyncio   
 @pytest.mark.asyncio
 async def test_execute_trade_limit_order_success(exchange_interface_fixture):
     """Test successful execution of a limit order."""
@@ -126,8 +134,9 @@ async def test_execute_trade_limit_order_success(exchange_interface_fixture):
     assert result['order_id'] == 'order123'
     exchange_interface_fixture.exchange_manager.exchange.create_order.assert_awaited_once()
 
-
+#test execute trade market order success
 @pytest.mark.integration
+#test asyncio
 @pytest.mark.asyncio
 async def test_execute_trade_market_order_success(exchange_interface_fixture):
     """Test successful execution of a market order."""
@@ -162,7 +171,7 @@ async def test_cancel_order_success(exchange_interface_fixture):
     assert success is True
     exchange_interface_fixture.exchange_manager.exchange.close_order.assert_awaited_once_with('order123')
 
-
+#test cancel order not found    
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_cancel_order_not_found(exchange_interface_fixture):
@@ -173,7 +182,7 @@ async def test_cancel_order_not_found(exchange_interface_fixture):
     assert success is False
     exchange_interface_fixture.exchange_manager.exchange.close_order.assert_awaited_once_with('invalid_order')
 
-
+#test fetch candles success
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_fetch_candles_success(exchange_interface_fixture, sample_candles):
@@ -196,7 +205,7 @@ async def test_fetch_candles_success(exchange_interface_fixture, sample_candles)
         assert fetched['close'] == original['close']
         assert fetched['volume'] == original['volume']
 
-
+#test fetch candles exchange error  
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_fetch_candles_exchange_error(exchange_interface_fixture):

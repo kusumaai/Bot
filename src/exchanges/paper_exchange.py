@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/exchanges/paper_exchange.py
+"""
+Module: src.exchanges
+Provides paper exchange implementation.
+"""
 from typing import Any, Dict, Optional, List
 import asyncio
 from decimal import Decimal

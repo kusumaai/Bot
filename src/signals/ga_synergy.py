@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-# src/signals/ga_synergy.py
+#! /usr/bin/env python3
+#src/signals/ga_synergy.py
 """
-Module: signals/ga_synergy.py
-Genetic algorithm for trading rule optimization
+Module: src.signals
+Provides genetic algorithm synergy.
 """
 #import required modules
 from dataclasses import dataclass, field

@@ -1,3 +1,10 @@
+#! /usr/bin/env python3
+#tests/unit/test_database_queries.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the database queries module.
+
+"""
 import pytest
 from decimal import Decimal
 from datetime import datetime, timezone

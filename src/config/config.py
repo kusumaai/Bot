@@ -1,3 +1,8 @@
+#src/config/config.py
+"""
+Module: src.config
+Provides configuration management.
+"""
 import os
 import json
 from typing import Dict, Any

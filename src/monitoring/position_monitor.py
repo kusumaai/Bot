@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/monitoring/position_monitor.py
 """
-Module: monitoring/position_monitor.py
-Position monitoring with alerts and risk management
+Module: src.monitoring
+Provides position monitoring with alerts and risk management
 """
-
 import asyncio
 import time
 from decimal import Decimal

@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/exchanges/actual_exchange.py
+"""
+Module: src.exchanges
+Provides actual exchange implementation.
+"""
 from typing import Any, Dict
 import ccxt.async_support as ccxt
 from utils.error_handler import handle_error_async, ExchangeError

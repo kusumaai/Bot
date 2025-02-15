@@ -1,11 +1,9 @@
 #! /usr/bin/env python3
-# -*- coding: utf-8 -*-
 #src/utils/health_monitor.py
 """
-Module: utils/health_monitor.py
-Production health monitoring system
+Module: src.utils
+Provides health monitoring functionality.
 """
-
 import time
 import psutil
 import asyncio
@@ -198,7 +196,7 @@ class HealthMonitor:
         except Exception as e:
             self.logger.error(f"Database check failed: {e}")
             return False
-            
+    #check exchange
     async def _check_exchange(self) -> bool:
         """Verify exchange connectivity"""
         try:

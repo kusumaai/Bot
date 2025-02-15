@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_math_handler.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the math handler module.
+"""
 import pytest
 from src.utils.numeric_handler import NumericHandler
 from src.utils.exceptions import MathError

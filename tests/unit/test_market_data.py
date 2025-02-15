@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_market_data.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the market data module.
+"""
 from unittest.mock import AsyncMock
 import pytest
 from decimal import Decimal

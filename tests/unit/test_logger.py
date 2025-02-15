@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_logger.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the logger module.
+"""
 import pytest
 import logging
 import os

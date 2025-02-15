@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/integration/test_full_trade_flow.py
+"""
+Module: tests.integration
+Provides integration testing functionality for the full trade flow.
+"""
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock

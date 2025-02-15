@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_error_handler.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the error handler module.
+"""
 import pytest
 from unittest.mock import MagicMock
 from src.utils.error_handler import (

@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_exchange_interface_errors.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the exchange interface errors module.
+"""
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock

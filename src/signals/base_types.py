@@ -1,5 +1,8 @@
+#! /usr/bin/env python3
+#src/signals/base_types.py
 """
-signals/base_types.py - Core data types and interfaces
+Module: src.signals
+Provides base signal types.
 """
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional

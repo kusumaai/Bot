@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/indicators/indicators_pta.py
 """
-Module: indicators/indicators_pta.py
-Technical indicator calculations using pandas_ta with proper error handling
+Module: src.indicators
+Provides technical indicator calculations
 """
-
 import pandas as pd
 import pandas_ta as ta
 import numpy as np

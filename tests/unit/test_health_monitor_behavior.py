@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_health_monitor_behavior.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the health monitor behavior module.
+"""
 import pytest
 import asyncio
 from src.utils.health_monitor import HealthMonitor

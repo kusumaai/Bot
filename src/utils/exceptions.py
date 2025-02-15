@@ -1,5 +1,10 @@
-"""Custom exceptions for the trading system"""
-
+#! /usr/bin/env python3
+#src/utils/exceptions.py
+"""
+Module: src.utils
+Provides exception handling functionality.
+""" 
+#trading error class
 class TradingError(Exception):
     """Base class for trading system exceptions"""
     pass

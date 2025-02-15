@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_utils_database_error_handler.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the database error handler module.
+"""
 import logging
 import pytest
 from unittest.mock import MagicMock

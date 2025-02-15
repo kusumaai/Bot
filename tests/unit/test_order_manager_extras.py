@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_order_manager_extras.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the order manager extras module.
+""" 
 import pytest
 import logging
 from decimal import Decimal

@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/trading/circuit_breaker.py
 """
-Module: trading/circuit_breaker.py
-Circuit breaker implementation for risk management
+Module: src.trading
+Provides circuit breaker implementation for risk management.
 """
 
 from decimal import Decimal
@@ -14,7 +15,7 @@ from utils.error_handler import handle_error_async
 from bot_types.base_types import RiskLimits
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import CircuitBreakerError
-
+#circuit breaker class that implements the circuit breaker pattern for risk management and trading
 class CircuitBreaker:
     def __init__(self, ctx: Any):
         self.ctx = ctx
@@ -26,7 +27,7 @@ class CircuitBreaker:
         self.nh = NumericHandler()
         self._lock = asyncio.Lock()
         self.emergency_triggered = False
-
+    #initialize the circuit breaker components
     async def initialize(self) -> bool:
         """Initialize circuit breaker components."""
         try:
@@ -43,7 +44,7 @@ class CircuitBreaker:
         except Exception as e:
             await handle_error_async(e, "CircuitBreaker.initialize", self.logger)
             return False
-
+    #continuously monitor the portfolio and enforce circuit breakers
     async def monitor_loop(self):
         """Continuously monitor portfolio and enforce circuit breakers"""
         while not self.triggered and self.ctx.running:
@@ -53,7 +54,7 @@ class CircuitBreaker:
             except Exception as e:
                 await handle_error_async(e, "CircuitBreaker.monitor_loop", self.logger)
                 await asyncio.sleep(60)  # Wait before retrying
-
+    #check various risk conditions and enforce circuit breakers
     async def check_conditions(self) -> None:
         """Check various risk conditions and enforce circuit breakers"""
         try:
@@ -89,7 +90,7 @@ class CircuitBreaker:
             
         except Exception as e:
             await handle_error_async(e, "CircuitBreaker.trigger_emergency_stop", self.logger)
-
+    #calculate the current drawdown of the portfolio
     async def _calculate_drawdown(self) -> Decimal:
         """Calculate current drawdown"""
         try:
@@ -115,7 +116,7 @@ class CircuitBreaker:
         except Exception as e:
             await handle_error_async(e, "CircuitBreaker._get_current_balance", self.logger)
             return Decimal('0')
-
+    #calculate the daily loss of the portfolio
     async def _calculate_daily_loss(self) -> Decimal:
         """Calculate daily loss"""
         try:
@@ -134,7 +135,7 @@ class CircuitBreaker:
         except Exception as e:
             await handle_error_async(e, "CircuitBreaker._calculate_daily_loss", self.logger)
             return Decimal('0')
-
+    #check if emergency stop conditions are met
     async def check_emergency_stop(self):
         """Check if emergency stop conditions are met."""
         async with self._lock:
@@ -146,7 +147,7 @@ class CircuitBreaker:
                     # Add logic to halt trading, close positions, etc.
             except Exception as e:
                 await handle_error_async(e, "CircuitBreaker.check_emergency_stop", self.logger)
-
+    #verify the exchange connectivity
     async def _check_exchange(self) -> bool:
         """Verify exchange connectivity"""
         try:

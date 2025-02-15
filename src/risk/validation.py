@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/risk/validation.py
 """
-Module: risk/validation.py
-Market data and risk validation utilities
+Module: src.risk
+Provides risk validation.
 """
-
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field

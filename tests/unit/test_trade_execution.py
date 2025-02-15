@@ -1,10 +1,9 @@
-# tests/unit/test_trade_execution.py
-
+#! /usr/bin/env python3 
+#tests/unit/test_trade_execution.py
 """
-Module: test_trade_execution.py
-Unit tests for trade execution functionality
+Module: tests.unit
+Provides unit testing functionality for the trade execution module.
 """
-#import required modules
 import pytest
 from decimal import Decimal
 import logging

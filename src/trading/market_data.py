@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/trading/market_data.py
+"""
+Module: src.trading
+Provides market data functionality.
+"""
 from typing import Any, List, Dict
 import asyncio
 import logging
@@ -5,7 +11,7 @@ import logging
 from utils.error_handler import handle_error_async
 from utils.exceptions import MarketDataValidationError
 from risk.validation import MarketDataValidation
-
+#market data class that fetches and validates market data
 class MarketData:
     def __init__(self, ctx: Any):
         self.ctx = ctx

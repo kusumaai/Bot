@@ -2,7 +2,7 @@
 name = "KillaBot"
 version = "0.1.1"
 description = "Automated trading Bot"
-authors = ["Phil Sanderson <philsanderson@pm.me>, Mike Van-Dijk <mike@.com>"]
+authors = ["Phil Sanderson <philsanderson@pm.me>, Mike Van-Dijk <mike@van-dijk.com>"]
 packages = [
   { include = "killabot", from = "src" }
 ]

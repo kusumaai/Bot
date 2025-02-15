@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/utils/config_loader.py
+"""
+Module: src.utils
+Provides configuration loading functionality.
+"""
 from decimal import Decimal
 from typing import Dict, Any, Optional, Set
 import yaml
@@ -6,6 +12,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from utils.numeric import NumericHandler
 
+#risk config class that represents the risk config  
 @dataclass
 class RiskConfig:
     max_position_size: Decimal
@@ -13,7 +20,7 @@ class RiskConfig:
     max_drawdown: Decimal
     max_daily_loss: Decimal
     max_positions: int
-    
+    #from dict method
     @classmethod
     def from_dict(cls, data: Dict) -> 'RiskConfig':
         nh = NumericHandler()
@@ -24,14 +31,14 @@ class RiskConfig:
             max_daily_loss=nh.percentage_to_decimal(data['max_daily_loss']),
             max_positions=int(data['max_positions'])
         )
-
+#trading config class that represents the trading config
 @dataclass
 class TradingConfig:
     risk: RiskConfig
     timeframe: str
     market_list: list
     initial_balance: Decimal
-    
+
     @classmethod
     def from_dict(cls, data: Dict) -> 'TradingConfig':
         nh = NumericHandler()
@@ -41,7 +48,7 @@ class TradingConfig:
             market_list=data['market_list'],
             initial_balance=nh.to_decimal(data['initial_balance'])
         )
-
+#config loader class that loads the config  
 class ConfigLoader:
     def __init__(self, config_path: str):
         self.config_path = Path(config_path)
@@ -64,7 +71,7 @@ class ConfigLoader:
             
         except Exception as e:
             raise ValueError(f"Failed to load config: {e}")
-            
+    #validate  the config
     def _validate_config(self, config: Dict) -> None:
         """Validate configuration values"""
         # Define required fields and their types
@@ -116,13 +123,13 @@ class ConfigLoader:
         # Validate market list
         if not config['market_list']:
             raise ValueError("market_list cannot be empty")
-            
+    #get the config
     def get_config(self) -> TradingConfig:
         """Get current configuration"""
         if self._config is None:
             raise ValueError("Configuration not loaded")
         return self._config
-        
+    #reload the config
     def reload_config(self) -> TradingConfig:
         """Reload configuration from file"""
         return self.load_config()

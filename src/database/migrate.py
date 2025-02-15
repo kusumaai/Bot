@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/database/migrate.py
 """
 Database migration script
 """

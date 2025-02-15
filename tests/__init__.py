@@ -1,6 +1,8 @@
+#! /usr/bin/env python3
+#tests/__init__.py
 """
-Test package initialization.
-Ensures the root directory is in the Python path.
+Module: tests
+Provides unit testing functionality for the tests module.
 """
 import os
 import sys

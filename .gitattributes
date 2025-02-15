@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+*.txt text
+*.md text
+*.rst text
+*.py text
+*.pyi text
+*.pyc text
+*.pyo text
+*.pyd text

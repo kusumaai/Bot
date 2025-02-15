@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_trading_ratchet.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the trading ratchet module.
+"""
 import logging
 import pytest
 from decimal import Decimal

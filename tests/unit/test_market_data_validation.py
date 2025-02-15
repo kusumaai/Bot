@@ -1,6 +1,4 @@
 #! /usr/bin/env python3
-#test_market_data_validation.py     
-"""Test market data validation"""
 import pytest
 from decimal import Decimal
 from src.risk.limits import RiskLimits

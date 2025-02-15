@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-# src/signals/ml_signals.py
+#! /usr/bin/env python3
+#src/signals/ml_signals.py
 """
-Module: signals/ml_signals.py
-Machine Learning Signal Generator
+Module: src.signals
+Provides machine learning signal generation.
 """
 #import required modules
 import logging

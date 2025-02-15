@@ -1,4 +1,4 @@
-# KillaBot 0.1.0
+# Bot 0.9
 
 A robust automated trading system with advanced safety features, risk management, and data validation.
 
@@ -27,7 +27,7 @@ A robust automated trading system with advanced safety features, risk management
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 venv\Scripts\activate     # Windows
-```
+```       
 
 2. Install dependencies:
 ```bash

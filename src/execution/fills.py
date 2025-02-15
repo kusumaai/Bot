@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/execution/fills.py
+"""
+Module: src.execution
+Provides fill information management.
+"""
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict
@@ -17,3 +23,6 @@ class FillInfo:
     fees: Decimal = Decimal('0')
     liquidity: str = 'taker'
     metadata: Dict[str, Any] = field(default_factory=dict) 
+    
+    # ... rest of the class needs implementation ... 
+    #TODO: Implement the class

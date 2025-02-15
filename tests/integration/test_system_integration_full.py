@@ -1,3 +1,10 @@
+#! /usr/bin/env python3
+#tests/integration/test_system_integration_full.py
+"""
+Module: tests.integration
+Provides integration testing functionality for the full system.
+Maybe needs to merge with test_main_system.py
+"""
 import pytest
 import asyncio
 from src.startup.system_init import SystemInitializer

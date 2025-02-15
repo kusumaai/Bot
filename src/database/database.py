@@ -1,30 +1,32 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+# src/database/database.py
 """
 Module: database/database.py
-
-Provides a production-ready context manager for SQLite connections and
-helper functions to execute SQL queries with automatic commits.
+Context manager for SQLite connections and helper functions to execute SQL queries with automatic commits.  
 """
 
-import sqlite3
-import logging
-from typing import Any, List, Dict, Optional, Union, Tuple
-from contextlib import asynccontextmanager
-from decimal import Decimal, InvalidOperation
-import aiosqlite
-import json
-from datetime import datetime
 import asyncio
-from utils.numeric_handler import NumericHandler
-from utils.error_handler import handle_error_async, DatabaseError
-from utils.exceptions import DatabaseError
+import json
+import logging
+import sqlite3
+from contextlib import asynccontextmanager
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import aiosqlite
 from aiosqlite import connect
 
-logger = logging.getLogger('TradingBot')
+from utils.error_handler import DatabaseError, handle_error_async
+from utils.exceptions import DatabaseError
+from utils.numeric_handler import NumericHandler
+
+logger = logging.getLogger("TradingBot")
+
 
 class QueryBuilder:
     """Placeholder for QueryBuilder class to safely build SQL queries"""
-    
+
     def build_insert_trade(self, trade: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
         """Build SQL insert statement for a trade"""
         query = """
@@ -32,18 +34,20 @@ class QueryBuilder:
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """
         params = (
-            trade.get('id'),
-            trade.get('symbol'),
-            trade.get('entry_price'),
-            trade.get('size'),
-            trade.get('side'),
-            trade.get('strategy'),
-            json.dumps(trade.get('metadata')) if trade.get('metadata') else None
+            trade.get("id"),
+            trade.get("symbol"),
+            trade.get("entry_price"),
+            trade.get("size"),
+            trade.get("side"),
+            trade.get("strategy"),
+            json.dumps(trade.get("metadata")) if trade.get("metadata") else None,
         )
         return query, params
 
+
 class DatabaseConnection:
     """Synchronous context manager for SQLite database connections."""
+
     def __init__(self, db_path: str, logger=None, **kwargs):
         self.db_path = db_path
         self.logger = logger or logging.getLogger(__name__)
@@ -76,6 +80,7 @@ class DatabaseConnection:
         # Implementation to create necessary tables
         pass
 
+
 @asynccontextmanager
 async def async_db_connection(db_path: str):
     """Async context manager for database connections using aiosqlite."""
@@ -85,6 +90,7 @@ async def async_db_connection(db_path: str):
     except Exception as e:
         logger.error(f"Async DB connection error: {e}")
         raise
+
 
 async def execute_sql(query: str, params: Tuple[Any, ...], db_path: str) -> bool:
     try:
@@ -99,6 +105,7 @@ async def execute_sql(query: str, params: Tuple[Any, ...], db_path: str) -> bool
         handle_error_async(e, "execute_sql", logger)
         return False
 
+
 class DatabaseQueries:
     """Safe database query implementations"""
 
@@ -107,7 +114,7 @@ class DatabaseQueries:
         self.pool: Optional[asyncio.Pool] = None
         self.logger = logger
         self.nh = NumericHandler()
-        self.db_connection = DatabaseConnection(config['database']['dbname'])
+        self.db_connection = DatabaseConnection(config["database"]["dbname"])
         self._lock = asyncio.Lock()
         self.query_builder = QueryBuilder()
 
@@ -115,11 +122,11 @@ class DatabaseQueries:
         """Initialize database connection pool"""
         try:
             self.pool = await asyncio.create_pool(
-                host=self.config['database']['host'],
-                port=self.config['database']['port'],
-                user=self.config['database']['user'],
-                password=self.config['database']['password'],
-                database=self.config['database']['dbname']
+                host=self.config["database"]["host"],
+                port=self.config["database"]["port"],
+                user=self.config["database"]["user"],
+                password=self.config["database"]["password"],
+                database=self.config["database"]["dbname"],
             )
             return True
         except Exception as e:
@@ -131,7 +138,9 @@ class DatabaseQueries:
         if self.pool:
             await self.pool.close()
 
-    async def execute(self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()) -> Any:
+    async def execute(
+        self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()
+    ) -> Any:
         """Execute a SQL query with parameters"""
         try:
             async with self.db_connection.get_connection() as conn:
@@ -170,12 +179,12 @@ class DatabaseQueries:
         """
         params = (
             symbol,
-            ticker.get('timestamp'),
-            ticker.get('open'),
-            ticker.get('high'),
-            ticker.get('low'),
-            ticker.get('last'),
-            ticker.get('baseVolume')
+            ticker.get("timestamp"),
+            ticker.get("open"),
+            ticker.get("high"),
+            ticker.get("low"),
+            ticker.get("last"),
+            ticker.get("baseVolume"),
         )
         try:
             await self.execute(query, params)
@@ -185,10 +194,7 @@ class DatabaseQueries:
             return False
 
     async def update_position_status(
-        self,
-        position_id: str,
-        status: str,
-        metadata: Optional[Dict[str, Any]] = None
+        self, position_id: str, status: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """Update the status of a position"""
         query = """
@@ -196,11 +202,7 @@ class DatabaseQueries:
             SET status = ?, metadata = ?
             WHERE id = ?
         """
-        params = (
-            status,
-            json.dumps(metadata) if metadata else None,
-            position_id
-        )
+        params = (status, json.dumps(metadata) if metadata else None, position_id)
         try:
             await self.execute(query, params)
             return True
@@ -226,14 +228,17 @@ class DatabaseQueries:
         query = "SELECT * FROM positions WHERE status = 'OPEN'"
         try:
             rows = await self.execute(query, ())
-            return [{
-                'symbol': pos['symbol'],
-                'size': self.nh.to_decimal(pos['size']),
-                'entry_price': self.nh.to_decimal(pos['entry_price']),
-                'current_price': self.nh.to_decimal(pos['current_price']),
-                'unrealized_pnl': self.nh.to_decimal(pos['unrealized_pnl']),
-                'last_update': pos['last_update']
-            } for pos in rows]
+            return [
+                {
+                    "symbol": pos["symbol"],
+                    "size": self.nh.to_decimal(pos["size"]),
+                    "entry_price": self.nh.to_decimal(pos["entry_price"]),
+                    "current_price": self.nh.to_decimal(pos["current_price"]),
+                    "unrealized_pnl": self.nh.to_decimal(pos["unrealized_pnl"]),
+                    "last_update": pos["last_update"],
+                }
+                for pos in rows
+            ]
         except DatabaseError as e:
             self.logger.error(f"Failed to retrieve open positions: {e}")
             return []
@@ -247,7 +252,7 @@ class DatabaseQueries:
     async def ping(self) -> bool:
         """Check database connection"""
         try:
-            async with aiosqlite.connect(self.config['database']['dbname']) as db:
+            async with aiosqlite.connect(self.config["database"]["dbname"]) as db:
                 await db.execute("SELECT 1")
                 return True
         except Exception:
@@ -273,7 +278,7 @@ class DatabaseQueries:
             self.logger.warning("No updates provided for trade.")
             return False
 
-        set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
+        set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
         query = f"UPDATE trades SET {set_clause} WHERE id = ?"
         params = list(updates.values()) + [trade_id]
         try:

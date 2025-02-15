@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_database_queries_errors.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the database queries errors module.
+""" 
 import pytest
 import asyncio
 from src.database.queries import DatabaseQueries

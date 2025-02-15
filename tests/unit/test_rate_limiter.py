@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_rate_limiter.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the rate limiter module.
+"""
 import pytest
 from decimal import Decimal
 import asyncio

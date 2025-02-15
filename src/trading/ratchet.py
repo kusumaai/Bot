@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/trading/ratchet.py
 """
-Module: trading/ratchet.py
-Position size ratcheting implementation
+Module: src.trading
+Provides ratchet functionality.
 """
-
 from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
 import numpy as np
@@ -19,7 +19,7 @@ from utils.error_handler import handle_error, handle_error_async
 from utils.numeric_handler import NumericHandler
 from utils.exceptions import RatchetError
 from execution.exchange_interface import ExchangeInterface
-
+#ratchet state class that represents the state of the ratchet
 @dataclass
 class RatchetState:
     """State tracking for ratchet system"""
@@ -34,7 +34,7 @@ class RatchetState:
     max_adverse_excursion: Decimal
     last_update: float
     entry_time: float
-
+#ratchet manager class that manages the ratchet 
 class RatchetManager:
     def __init__(self, ctx: Any):
         self.ctx = ctx
@@ -68,13 +68,13 @@ class RatchetManager:
             raise ValueError("Ratchet thresholds and lock-ins must have same length")
         if not all(x < y for x, y in zip(self.thresholds[:-1], self.thresholds[1:])):
             raise ValueError("Ratchet thresholds must be ascending")
-
+    #safe decimal function that safely converts a value to a decimal
     def safe_decimal(self, value):
         try:
             return Decimal(str(value))
         except Exception:
             return Decimal("0")
-
+    #initialize the ratchet manager
     async def initialize(self) -> bool:
         """Initialize ratchet manager"""
         try:
@@ -92,7 +92,7 @@ class RatchetManager:
         except Exception as e:
             await handle_error_async(e, "RatchetManager.initialize", self.logger)
             return False
-
+    #update the trailing stops for all active trades
     async def update_trailing_stops(self) -> None:
         """Update trailing stops for all active trades"""
         try:
@@ -169,10 +169,10 @@ class RatchetManager:
         except Exception as e:
             await handle_error_async(e, "RatchetManager.initialize_trade", self.logger)
             raise e
-
+    #normalize the trade id
     def _normalize_trade_id(self, trade_id: str, symbol: str) -> str:
         return f"{symbol}_{trade_id}"
-
+    #update the position ratchet
     async def update_position_ratchet(self, symbol: str, current_price: Decimal, additional_data: Dict[str, Any]) -> Decimal:
         normalized_id = self._get_trade_id(symbol)
         if normalized_id not in self.active_trades:
@@ -183,13 +183,13 @@ class RatchetManager:
         trade["current_stop"] = new_stop
         self.logger.info(f"Updated ratchet for {normalized_id}: new_stop={new_stop}")
         return new_stop
-
+    #get the trade id
     def _get_trade_id(self, symbol: str) -> Optional[str]:
         for trade_id, details in self.active_trades.items():
             if details["symbol"] == symbol:
                 return trade_id
         return None
-
+    #monitor the trades
     async def monitor_trades(self, exchange: ExchangeInterface):
         while True:
             try:
@@ -209,7 +209,7 @@ class RatchetManager:
             except Exception as e:
                 await handle_error_async(e, "RatchetManager.monitor_trades", self.logger)
                 await asyncio.sleep(5)  # Back off on error
-
+    #get the trade metrics
     def get_trade_metrics(self, trade_id: str) -> Dict[str, Any]:
         """Get current metrics for trade"""
         if trade_id not in self.active_trades:
@@ -234,7 +234,7 @@ class RatchetManager:
         except Exception as e:
             handle_error(e, "RatchetManager.get_trade_metrics", logger=self.logger)
             return {}
-
+    #remove the trade
     def remove_trade(self, trade_id: str) -> None:
         """Clean up trade tracking"""
         try:
@@ -247,7 +247,7 @@ class RatchetManager:
                 del self.active_trades[trade_id]
         except Exception as e:
             handle_error(e, "RatchetManager.remove_trade", logger=self.logger)
-
+    #get the status report
     def get_status_report(self) -> Dict[str, Any]:
         """Get status report for all tracked trades"""
         return {

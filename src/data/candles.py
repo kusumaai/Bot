@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/data/candles.py
 """
 Tool: data/candles.py
 Database management for OHLCV candle data with proper error handling
 """
-
 import os
 import sys
 import time

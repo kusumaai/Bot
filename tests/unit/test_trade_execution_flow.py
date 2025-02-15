@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_trade_execution_flow.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the trade execution flow module.
+"""
 import logging
 import pytest
 from decimal import Decimal

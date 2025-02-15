@@ -1,3 +1,10 @@
+#! /usr/bin/env python3
+#src/utils/numeric.py
+"""
+Module: src.utils
+Provides numerical handling functionality.
+Maybe needs to merge with numeric_handler.py
+"""
 from decimal import Decimal
 from typing import Union, Any, Optional
 from decimal import ROUND_HALF_UP

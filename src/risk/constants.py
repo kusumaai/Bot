@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/risk/constants.py
 """
-Module: risk/constants.py
-Core trading constants and decimal handling utilities
+Module: src.risk
+Provides risk management constants.
 """
 
 from decimal import Decimal, ROUND_HALF_UP

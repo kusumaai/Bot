@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/exchanges/rate_limiter.py
+"""
+Module: src.exchanges
+Provides rate limiting implementation.
+"""
 import asyncio
 import time
 from typing import Dict

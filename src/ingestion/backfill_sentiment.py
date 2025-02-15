@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/ingestion/backfill_sentiment.py
 """
-Module: ingestion/backfill_sentiment.py
+Module: src.ingestion
+Provides backfill sentiment management.
 """
-
 import asyncio
 import aiohttp
 import json
@@ -11,7 +12,7 @@ from typing import List, Dict, Any
 
 from utils.error_handler import handle_error
 from database.database import DBConnection
-
+#fetch sentiment data from alternative.me (or a custom endpoint) asynchronously
 async def fetch_sentiment_data(ctx: Any) -> List[Dict[str, Any]]:
     """
     Fetch sentiment data from Alternative.me (or a custom endpoint) asynchronously.

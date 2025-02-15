@@ -1,9 +1,15 @@
+#! /usr/bin/env python3
+#src/execution/validation.py
+"""
+Module: src.execution
+Provides validation management.
+"""
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict
 from src.bot_types.base_types import Validatable, ValidationResult
 
-
+#order validator class that validates orders
 @dataclass
 class OrderValidator(Validatable):
     """Centralized order validation"""

@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/database/queries.py
+"""
+Module: database/queries.py
+Provides safe database query implementations.
+"""
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Any, Optional, Union, Tuple
 import logging

@@ -1,16 +1,16 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/utils/logger.py
 """
-Module: utils/logger.py
-Logging configuration and setup
+Module: src.utils
+Provides logging functionality.
 """
-
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import os
 from typing import Optional
-
+#setup logging function that sets up the logging
 def setup_logging(name: str, level: str, log_file: Optional[str] = "logs/KillaBot.log"):
     """Set up logging with specified level and optional file handler."""
     logger = logging.getLogger(name)
@@ -30,7 +30,7 @@ def setup_logging(name: str, level: str, log_file: Optional[str] = "logs/KillaBo
         logger.addHandler(file_handler)
     
     return logger
-
+#get logger function that gets the logger
 def get_logger(name: str = None) -> logging.Logger:
     if name:
         return logging.getLogger(name)

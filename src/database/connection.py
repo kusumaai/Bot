@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#src/database/connection.py
+"""
+Module: database/connection.py
+Provides database connection management.
+"""
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, List, Any, Dict
 import aiosqlite

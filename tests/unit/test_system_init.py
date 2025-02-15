@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_system_init.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the system initialization module.
+""" 
 import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch

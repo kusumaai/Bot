@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-"""
-signals/signal_utils.py - Signal combination and validation utilities
-"""
+#! /usr/bin/env python3
 from decimal import Decimal
 from typing import List, Dict, Any, Optional, Tuple
 import time

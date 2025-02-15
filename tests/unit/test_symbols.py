@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_symbols.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the symbols module.
+""" 
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 

@@ -1,3 +1,9 @@
+#! /usr/bin/env python3
+#tests/unit/test_ratchet_manager.py
+"""
+Module: tests.unit
+Provides unit testing functionality for the ratchet manager module.
+""" 
 import pytest
 from decimal import Decimal
 import logging

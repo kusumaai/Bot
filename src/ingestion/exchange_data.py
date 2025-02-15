@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python3
+#src/ingestion/exchange_data.py
 """
-Module: ingestion/exchange_data.py
-Handles exchange data ingestion with proper error handling and rate limiting
+Module: src.ingestion
+Provides exchange data ingestion with proper error handling and rate limiting
 """
-
 import asyncio
 import time
 from typing import Any, Dict, List, Optional

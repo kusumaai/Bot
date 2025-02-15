@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
+#!/usr /bin/env python3
+#backtesting/backtester.py
 """
 Module: backtesting/backtester.py
 Comprehensive backtesting framework with proper risk management
 """
-
+#import the necessary libraries
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
@@ -15,7 +16,6 @@ import logging
 import pandas_ta as ta
 import sys
 import asyncio
-
 from database.database import DatabaseConnection
 from signals.ga_synergy import generate_ga_signals
 from utils.error_handler import handle_error_async
@@ -35,6 +35,7 @@ from signals.population import create_baseline_rule
 from signals.evaluation import evaluate_rule
 from utils.numeric_handler import NumericHandler
 
+#dataclass for the backtest results
 @dataclass
 class BacktestResults:
     """Container for backtest results"""
@@ -64,6 +65,7 @@ class BacktestResults:
             f"Total Return: {self.total_return:.2%}"
         )
 
+#dataclass for the backtest config
 @dataclass
 class BacktestConfig:
     warmup_periods: int = 233  # Was magic number
@@ -73,6 +75,7 @@ class BacktestConfig:
     stop_loss_pct: Decimal = Decimal('0.02')  # 2% stop loss
     take_profit_pct: Decimal = Decimal('0.03')  # 3% take profit
 
+#class for the backtester
 class Backtester:
     def __init__(self, ctx: Any):
         self.ctx = ctx
@@ -87,7 +90,7 @@ class Backtester:
         self.ratchet_manager = None
         self.current_balance = None
         self.trades = []
-
+    #get the database connection for the backtester
     async def get_db_connection(self) -> Optional[DatabaseConnection]:
         """Get database connection from context or create new one"""
         if self.db_connection:
@@ -100,7 +103,7 @@ class Backtester:
         except Exception as e:
             await handle_error_async(e, "Backtester.get_db_connection", self.logger)
             return None
-
+    #initialize the backtester
     async def initialize(self) -> bool:
         try:
             if self.initialized:
@@ -130,7 +133,7 @@ class Backtester:
         except Exception as e:
             await handle_error_async(e, "Backtester.initialize", self.logger)
             return False
-
+    #execute the trade for the backtester
     async def _execute_trade(
         self,
         signal: Dict[str, Any],
@@ -175,7 +178,7 @@ class Backtester:
         except Exception as e:
             await handle_error_async(e, "Backtester._execute_trade", self.logger)
             return None
-
+    #run the backtest for the backtester
     async def run_backtest(self, historical_data: pd.DataFrame) -> None:
         """Run the backtesting simulation"""
         for index, candle in historical_data.iterrows():
@@ -208,7 +211,7 @@ class Backtester:
         self.logger.info(f"Final Balance: {self.current_balance}")
         self.logger.info(f"Total Trades Executed: {len(self.trades)}")
 
-
+#run the backtest for the backtester    
 def run_backtest(start_date: str, end_date: str, ctx: Any) -> BacktestResults:
     """Run backtest for specified period"""
     backtester = Backtester(ctx)
@@ -220,7 +223,7 @@ def run_backtest(start_date: str, end_date: str, ctx: Any) -> BacktestResults:
         
     return backtester.simulate_trades(data)
 
-
+#run the backtest for the backtester
 if __name__ == "__main__":
     import logging
     import json
@@ -246,7 +249,8 @@ if __name__ == "__main__":
         logger.error(f"Failed to load config.json: {e}")
         config = {}
     
-    @dataclass
+    #dataclass for the context of the backtester
+    @dataclass 
     class Context:
         logger: logging.Logger
         config: dict
@@ -258,7 +262,7 @@ if __name__ == "__main__":
         config=config,
         db_pool=os.path.join(project_root, "data", "candles.db")
     )
-    
+        
     try:
         # Run backtest for last month
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
