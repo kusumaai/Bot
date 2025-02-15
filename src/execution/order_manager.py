@@ -24,6 +24,7 @@ class OrderManager:
     def __init__(self, exchange_interface, db, logger):
         self.exchange_interface = exchange_interface
         self.db = db
+        self.db_queries = DatabaseQueries(self.db)
         self.logger = logger
         self._lock = asyncio.Lock()
         self.validator = DataValidator(self.logger)

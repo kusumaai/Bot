@@ -42,8 +42,12 @@ class MarketDataValidation(Validatable):
                 self.logger.warning("Empty market data received")
                 return False
 
-            # Validate price and volume
-            price = self.nh.to_decimal(data.get("price", 0))
+            # Validate price and volume; use 'current_price' if 'price' is not provided
+            price_val = data.get("price")
+            if price_val is None:
+                price_val = data.get("current_price", 0)
+            price = self.nh.to_decimal(price_val)
+
             volume = self.nh.to_decimal(data.get("volume", 0))
 
             if price <= 0 or volume <= 0:

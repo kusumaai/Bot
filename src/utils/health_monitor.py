@@ -119,15 +119,22 @@ class HealthMonitor:
         # initialize health monitor
 
     async def initialize(self) -> bool:
-        """Initialize health monitor"""
+        # If operating in paper mode, bypass full initialization
+        if self.ctx.config.get("paper_mode", False):
+            self.logger.info(
+                "HealthMonitor: Paper mode detected, skipping full initialization."
+            )
+            self.initialized = True
+            return True
         try:
             if self.initialized:
                 return True
             self._monitor_task = asyncio.create_task(self.monitor_loop())
             self.initialized = True
+            self.logger.info("HealthMonitor initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize health monitor: {e}")
+            self.logger.error(f"HealthMonitor initialization failed: {e}")
             return False
 
     async def start_monitoring(self):
@@ -267,10 +274,21 @@ class HealthMonitor:
 
             # Try to get a connection from the pool
             try:
-                async with self.ctx.db_connection.pool.acquire() as conn:
-                    async with conn.cursor() as cursor:
-                        await cursor.execute("SELECT 1")
-                        await cursor.fetchone()
+                if (
+                    hasattr(self.ctx.db_connection, "pool")
+                    and self.ctx.db_connection.pool
+                ):
+                    async with self.ctx.db_connection.pool.acquire() as conn:
+                        async with conn.cursor() as cursor:
+                            await cursor.execute("SELECT 1")
+                            await cursor.fetchone()
+                elif (
+                    hasattr(self.ctx.db_connection, "conn")
+                    and self.ctx.db_connection.conn is not None
+                ):
+                    await self.ctx.db_connection.conn.execute("SELECT 1")
+                else:
+                    raise Exception("No valid database connection found.")
             except Exception as db_error:
                 if self.components["database"].last_checked > 0:
                     raise Exception(f"Database query failed: {str(db_error)}")

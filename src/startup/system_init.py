@@ -5,6 +5,7 @@ Module: src.startup
 Provides system initialization and component setup.
 """
 import logging
+import shutil
 from pathlib import Path
 
 # import required modules
@@ -75,8 +76,9 @@ class SystemInitializer:
         try:
             min_space_mb = 1000  # 1GB minimum
             db_path = Path(self.db_connection.db_path)
-            free_space = db_path.parent.stat().st_free / (1024 * 1024)  # Convert to MB
-            return free_space >= min_space_mb
+            usage = shutil.disk_usage(str(db_path.parent))
+            free_space_mb = usage.free / (1024 * 1024)
+            return free_space_mb >= min_space_mb
         except Exception as e:
             self.logger.error(f"Failed to check disk space: {str(e)}")
             return False

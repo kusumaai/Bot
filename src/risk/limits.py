@@ -24,23 +24,78 @@ def load_risk_limits_from_config(config: Dict[str, Any]) -> RiskLimits:
         risk_config = config.get("risk_limits", {})
         limits = RiskLimits(
             min_position_size=Decimal(
-                str(risk_config.get("min_position_size", "0.01"))
+                str(
+                    risk_config.get(
+                        "min_position_size", config.get("min_position_size", "0.01")
+                    )
+                )
             ),
-            max_position_size=Decimal(str(risk_config.get("max_position_size", "0.5"))),
-            max_positions=int(risk_config.get("max_positions", 10)),
-            max_leverage=Decimal(str(risk_config.get("max_leverage", "3"))),
-            max_drawdown=Decimal(str(risk_config.get("max_drawdown", "0.2"))),
-            max_daily_loss=Decimal(str(risk_config.get("max_daily_loss", "0.03"))),
+            max_position_size=Decimal(
+                str(
+                    risk_config.get(
+                        "max_position_size", config.get("max_position_size", "0.5")
+                    )
+                )
+            ),
+            max_positions=int(
+                risk_config.get("max_positions", config.get("max_positions", 10))
+            ),
+            max_leverage=Decimal(
+                str(risk_config.get("max_leverage", config.get("max_leverage", "3")))
+            ),
+            max_drawdown=Decimal(
+                str(risk_config.get("max_drawdown", config.get("max_drawdown", "0.2")))
+            ),
+            max_daily_loss=Decimal(
+                str(
+                    risk_config.get(
+                        "max_daily_loss", config.get("max_daily_loss", "0.03")
+                    )
+                )
+            ),
             emergency_stop_pct=Decimal(
-                str(risk_config.get("emergency_stop_pct", "0.05"))
+                str(
+                    risk_config.get(
+                        "emergency_stop_pct", config.get("emergency_stop_pct", "0.05")
+                    )
+                )
             ),
-            risk_factor=Decimal(str(risk_config.get("risk_factor", "0.02"))),
-            kelly_scaling=Decimal(str(risk_config.get("kelly_scaling", "0.5"))),
-            max_correlation=Decimal(str(risk_config.get("max_correlation", "0.7"))),
+            risk_factor=Decimal(
+                str(risk_config.get("risk_factor", config.get("risk_factor", "0.02")))
+            ),
+            kelly_scaling=Decimal(
+                str(
+                    risk_config.get("kelly_scaling", config.get("kelly_scaling", "0.5"))
+                )
+            ),
+            max_correlation=Decimal(
+                str(
+                    risk_config.get(
+                        "max_correlation", config.get("max_correlation", "0.7")
+                    )
+                )
+            ),
             max_sector_exposure=Decimal(
-                str(risk_config.get("max_sector_exposure", "0.3"))
+                str(
+                    risk_config.get(
+                        "max_sector_exposure", config.get("max_sector_exposure", "0.3")
+                    )
+                )
             ),
-            max_volatility=Decimal(str(risk_config.get("max_volatility", "0.4"))),
+            max_volatility=Decimal(
+                str(
+                    risk_config.get(
+                        "max_volatility", config.get("max_volatility", "0.4")
+                    )
+                )
+            ),
+            min_liquidity=Decimal(
+                str(
+                    risk_config.get(
+                        "min_liquidity", config.get("min_liquidity", "0.0001")
+                    )
+                )
+            ),
         )
 
         validation = limits.validate()

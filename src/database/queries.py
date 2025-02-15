@@ -93,7 +93,9 @@ class DatabaseQueries:
         self.db_path = db_path
         self.logger = logger
         self.nh = NumericHandler()
-        self.db_connection = DatabaseConnection(db_path)
+        db_info = config.get("database", {})
+        db_path = db_info.get("dbname", db_info.get("path", "data/trading.db"))
+        self.db_connection = DatabaseConnection(db_path, logger=logger)
         self._lock = asyncio.Lock()
         self.query_builder = QueryBuilder()
         # Alias so that store_order is available if needed by tests.

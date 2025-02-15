@@ -1,42 +1,46 @@
 #! /usr/bin/env python3
-#src/data/candles.py
+# src/data/candles.py
 """
 Tool: data/candles.py
 Database management for OHLCV candle data with proper error handling
 """
-import os
-import sys
-import time
-import sqlite3
-import ccxt.async_support as ccxt
-from typing import List, Dict, Any, Optional, Union
-from datetime import datetime, timedelta
-from decimal import Decimal
-import pandas as pd
-import numpy as np
 import asyncio
 import logging
+import os
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Union
 
-from utils.logger import setup_logging
-from utils.error_handler import handle_error, ValidationError
-from database.queries import DatabaseQueries
+import ccxt.async_support as ccxt
+import numpy as np
+import pandas as pd
+
 from database.database import DatabaseConnection
+from database.queries import DatabaseQueries
+from utils.error_handler import ValidationError, handle_error
+from utils.logger import setup_logging
 
 # Initialize logger at module level
 logger = setup_logging(name="CandleManager", level="INFO")
 
-def get_stable_coin_markets(exchange: ccxt.Exchange, base_coins: List[str], 
-                           stable_coins: List[str]) -> List[str]:
+
+def get_stable_coin_markets(
+    exchange: ccxt.Exchange, base_coins: List[str], stable_coins: List[str]
+) -> List[str]:
     """Get valid trading pairs for specified base and stable coins"""
     markets = exchange.fetch_markets()
     selected = []
     for market in markets:
-        symbol = market.get('symbol')
-        if symbol and '/' in symbol:
-            base, quote = symbol.split('/')
+        symbol = market.get("symbol")
+        if symbol and "/" in symbol:
+            base, quote = symbol.split("/")
             if base in base_coins and quote in stable_coins:
                 selected.append(symbol)
     return selected
+
 
 async def fetch_and_save_candles(
     exchange: ccxt.Exchange,
@@ -45,32 +49,39 @@ async def fetch_and_save_candles(
     since: int,
     cursor: sqlite3.Cursor,
     limit: int = 1000,
-    period: int = 14
+    period: int = 14,
 ) -> int:
     """Fetch OHLCV data and save to the database"""
     try:
-        candles = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+        candles = await exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=since, limit=limit
+        )
         total = 0
         for candle in candles:
             timestamp, open_, high, low, close, volume = candle
-            datetime_str = datetime.utcfromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            datetime_str = datetime.utcfromtimestamp(timestamp / 1000).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             atr_14 = calculate_atr(candles, period=period)
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT OR IGNORE INTO candles (symbol, timeframe, timestamp, open, high, low, close, volume, datetime, atr_14, exchange)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol,
-                timeframe,
-                timestamp,
-                open_,
-                high,
-                low,
-                close,
-                volume,
-                datetime_str,
-                atr_14,
-                exchange.name
-            ))
+            """,
+                (
+                    symbol,
+                    timeframe,
+                    timestamp,
+                    open_,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    datetime_str,
+                    atr_14,
+                    exchange.name,
+                ),
+            )
             total += 1
         return total
 
@@ -84,24 +95,45 @@ async def fetch_and_save_candles(
         logger.error(f"Unexpected error while fetching candles for {symbol}: {e}")
         return 0
 
-def calculate_atr(candles: List[List[Any]], period: int = 14) -> Optional[float]:
-    """Calculate the Average True Range (ATR) for the given candles"""
-    try:
-        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close_prev'] = df['close'].shift(1)
-        df['tr'] = df[['high', 'low', 'close_prev']].apply(
-            lambda row: max(row['high'] - row['low'], 
-                           abs(row['high'] - row['close_prev']) if pd.notnull(row['close_prev']) else 0,
-                           abs(row['low'] - row['close_prev']) if pd.notnull(row['close_prev']) else 0),
-            axis=1
-        )
-        atr = df['tr'].rolling(window=period).mean().iloc[-1]
-        return atr if not np.isnan(atr) else None
-    except Exception as e:
-        logger.error(f"Failed to calculate ATR: {e}")
+
+def calculate_atr(candles: List[List[Any]], period: int = 14) -> Optional[Decimal]:
+    """Calculate the Average True Range (ATR) for the given candles using Decimal arithmetic"""
+    from decimal import Decimal, getcontext
+
+    getcontext().prec = 10
+    if len(candles) < 2:
+        logger.error("Not enough candles to calculate ATR")
         return None
+
+    tr_list = []
+    # iterate over candles starting from the second candle
+    for i in range(1, len(candles)):
+        try:
+            high = Decimal(str(candles[i][2]))
+            low = Decimal(str(candles[i][3]))
+            close_prev = Decimal(str(candles[i - 1][4]))
+
+            # Ensure both operands are Decimal
+            tr0 = high - low
+            tr1 = abs(high - close_prev)
+            tr2 = abs(low - close_prev)
+            tr = max(tr0, tr1, tr2)
+            tr_list.append(tr)
+        except Exception as e:
+            logger.error(f"Error processing candle at index {i}: {e}")
+            tr_list.append(Decimal("0"))
+
+    relevant_tr = tr_list[-period:] if len(tr_list) >= period else tr_list
+    if not relevant_tr:
+        logger.error("No TR values computed for ATR")
+        return Decimal("0")
+    try:
+        atr = sum(relevant_tr) / Decimal(len(relevant_tr))
+    except Exception as e:
+        logger.error(f"Error computing ATR: {e}")
+        return Decimal("0")
+    return atr
+
 
 class CandleProcessor:
     def __init__(self, db_queries: DatabaseQueries, logger: logging.Logger):
@@ -109,20 +141,20 @@ class CandleProcessor:
         self.logger = logger
 
     async def process_candles(
-        self,
-        symbol: str,
-        timeframe: str,
-        candles: List[List[Any]]
+        self, symbol: str, timeframe: str, candles: List[List[Any]]
     ) -> pd.DataFrame:
         """Process raw candle data into a DataFrame"""
         try:
-            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('datetime', inplace=True)
+            df = pd.DataFrame(
+                candles, columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
+            df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df.set_index("datetime", inplace=True)
             return df
         except Exception as e:
             self.logger.error(f"Failed to process candles for {symbol}: {e}")
             raise ValidationError(f"Failed to process candles for {symbol}: {e}") from e
+
 
 class CandleManager:
     def __init__(self, db_connection: DatabaseConnection, logger: logging.Logger):
@@ -131,32 +163,32 @@ class CandleManager:
         self.processor = CandleProcessor(self.db, self.logger)
 
     async def fetch_candles(
-        self,
-        symbol: str,
-        timeframe: str,
-        limit: int = 100
+        self, symbol: str, timeframe: str, limit: int = 100
     ) -> pd.DataFrame:
         """Fetch and process candles from database"""
         try:
             raw_candles = await self.db.fetch_candles(symbol, timeframe, limit)
             if raw_candles:
-                return await self.processor.process_candles(symbol, timeframe, raw_candles)
+                return await self.processor.process_candles(
+                    symbol, timeframe, raw_candles
+                )
             return pd.DataFrame()
         except Exception as e:
             self.logger.error(f"Failed to fetch candles for {symbol}: {e}")
             return pd.DataFrame()
 
+
 async def main():
     try:
-        exchange = ccxt.binance({'enableRateLimit': True})
-        base_coins = ['BTC', 'ETH']
-        stable_coins = ['USDT', 'USDC', 'BUSD', 'USDP', 'DAI']
-        timeframes = ['15m', '1h', '4h', '1d', '1w']
-        
+        exchange = ccxt.binance({"enableRateLimit": True})
+        base_coins = ["BTC", "ETH"]
+        stable_coins = ["USDT", "USDC", "BUSD", "USDP", "DAI"]
+        timeframes = ["15m", "1h", "4h", "1d", "1w"]
+
         symbols = get_stable_coin_markets(exchange, base_coins, stable_coins)
         logger.info(f"Selected markets: {symbols}")
 
-        since = exchange.parse8601('2020-01-01T00:00:00Z')
+        since = exchange.parse8601("2020-01-01T00:00:00Z")
         script_dir = os.path.dirname(os.path.abspath(__file__))
         db_path = os.path.join(script_dir, "candles.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -165,7 +197,8 @@ async def main():
 
         async with db_connection.db_connection.get_connection() as conn:
             cursor = await conn.cursor()
-            await cursor.execute('''
+            await cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS candles (
                     symbol TEXT NOT NULL,
                     timeframe TEXT NOT NULL,
@@ -180,7 +213,8 @@ async def main():
                     exchange TEXT,
                     PRIMARY KEY(symbol, timeframe, timestamp)
                 )
-            ''')
+            """
+            )
             await conn.commit()
 
             for symbol in symbols:
@@ -197,6 +231,7 @@ async def main():
     except Exception as e:
         handle_error(e, "main", logger=logger)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

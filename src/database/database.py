@@ -8,6 +8,7 @@ Context manager for SQLite connections and helper functions to execute SQL queri
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -69,11 +70,17 @@ class DatabaseConnection:
 
     async def initialize(self):
         try:
+            directory = os.path.dirname(self.db_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
             self.conn = await connect(self.db_path)
             await self.create_tables()
             return True
         except Exception as e:
-            # Handle exception, possibly log it
+            import traceback
+
+            self.logger.error(f"Failed to initialize database: {e}")
+            self.logger.error(traceback.format_exc())
             return False
 
     async def create_tables(self):
