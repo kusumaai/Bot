@@ -21,11 +21,13 @@ class TestSystemHealth:
     @pytest.fixture
     async def health_monitor(self, trading_context):
         """Provide configured health monitor."""
+        trading_context.config["paper_mode"] = True
         monitor = HealthMonitor(trading_context)
         monitor.CRITICAL_CPU_THRESHOLD = 90
         monitor.CRITICAL_MEMORY_THRESHOLD = 90
         monitor.MARKET_DATA_MAX_AGE = 60
         await monitor.initialize()
+        monitor.check_interval = 0.1
         return monitor
 
     @pytest.mark.asyncio

@@ -8,10 +8,11 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -49,9 +50,65 @@ class TradingContext:
         self.health_monitor = None
         self.ratchet_manager = None
 
-        # State tracking
-        self.last_health_check = 0
-        self.last_metrics_update = 0
+        # Task management
+        self._tasks: Set[asyncio.Task] = set()
+        self._shutdown_event = asyncio.Event()
+        self._cleanup_lock = asyncio.Lock()
+
+    def create_task(self, coro, name: Optional[str] = None) -> asyncio.Task:
+        """Create and track a new task."""
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def shutdown(self, signal_name: Optional[str] = None):
+        """Gracefully shutdown all components and tasks."""
+        if signal_name:
+            self.logger.info(f"Received {signal_name}, initiating shutdown...")
+
+        async with self._cleanup_lock:  # Prevent multiple simultaneous cleanups
+            if not self.running:  # Already shutting down
+                return
+
+            self.running = False
+            self._shutdown_event.set()
+
+            # Cancel all running tasks
+            if self._tasks:
+                self.logger.info(f"Cancelling {len(self._tasks)} running tasks...")
+                for task in self._tasks:
+                    if not task.done():
+                        task.cancel()
+
+                # Wait for all tasks to complete
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+                self._tasks.clear()
+
+            # Cleanup components in reverse initialization order
+            components = [
+                (self.ratchet_manager, "Ratchet Manager"),
+                (self.health_monitor, "Health Monitor"),
+                (self.circuit_breaker, "Circuit Breaker"),
+                (self.market_data, "Market Data"),
+                (self.exchange_interface, "Exchange Interface"),
+                (self.portfolio_manager, "Portfolio Manager"),
+                (self.risk_manager, "Risk Manager"),
+                (self.db_connection, "Database Connection"),
+            ]
+
+            for component, name in components:
+                if component:
+                    try:
+                        self.logger.info(f"Shutting down {name}...")
+                        if hasattr(component, "close"):
+                            await component.close()
+                        elif hasattr(component, "shutdown"):
+                            await component.shutdown()
+                    except Exception as e:
+                        self.logger.error(f"Error shutting down {name}: {e}")
+
+            self.logger.info("Shutdown complete")
 
 
 class DummyDatabaseConnection:
@@ -77,7 +134,7 @@ async def initialize_components(ctx: TradingContext) -> bool:
         ctx.db_connection = DatabaseConnection(
             ctx.config.get("database", {}).get("path", "data/trading.db")
         )
-
+        #
         if not await ctx.db_connection.initialize():
             print("DEBUG: Database Connection initialization failed", flush=True)
             ctx.logger.error("Failed to initialize database connection")
@@ -170,58 +227,106 @@ async def initialize_components(ctx: TradingContext) -> bool:
         return False
 
 
-async def run_bot():
-    """Main entry point for the trading bot"""
-    ctx = TradingContext()
-
-    init_success = await initialize_components(ctx)
-    if not init_success and ctx.config.get("paper_mode", False):
-        ctx.logger.warning(
-            "Initialization returned failure, but paper mode is enabled - overriding to True."
-        )
-        init_success = True
-    if not init_success:
-        ctx.logger.error("Failed to initialize components")
-        return
-
-    # Log the loaded configuration for debugging
-    ctx.logger.info(
-        "Loaded configuration: " + json.dumps(ctx.config, indent=2, default=str)
-    )
-
-    # If operating in paper mode, execute a test simulated trade
-    if ctx.config.get("paper_mode", False):
-        test_trade = {
-            "side": "buy",
-            "amount": "0.1",
-            "price": "100",
-            "symbol": "BTC/USDT",
-        }
-        await ctx.portfolio_manager.simulate_trade(test_trade)
-        summary = ctx.portfolio_manager.get_trade_summary()
-        ctx.logger.info(
-            "Test simulated trade executed. Trade Summary: "
-            + json.dumps(summary, default=str)
-        )
-
+async def run_background_tasks(ctx: TradingContext):
+    """Run background maintenance tasks."""
     try:
-        while ctx.running:
+        while not ctx._shutdown_event.is_set():
             if ctx.health_monitor and ctx.health_monitor.should_emergency_shutdown():
                 ctx.logger.error("Emergency shutdown triggered")
+                await ctx.shutdown()
                 break
+
             if ctx.ratchet_manager:
-                await ctx.ratchet_manager.ratchet()
+                try:
+                    await ctx.ratchet_manager.ratchet()
+                except Exception as e:
+                    ctx.logger.error(f"Error in ratchet manager: {e}")
+                    if not ctx.config.get("paper_mode", False):
+                        await ctx.shutdown()
+                        break
+
             await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
-        ctx.logger.error(f"Error in main loop: {str(e)}")
+        ctx.logger.error(f"Error in background tasks: {e}")
+        await ctx.shutdown()
+
+
+async def setup_signal_handlers(ctx: TradingContext):
+    """Setup signal handlers for graceful shutdown."""
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(
+                sig,
+                lambda s=sig: asyncio.create_task(ctx.shutdown(signal.Signals(s).name)),
+            )
+    except NotImplementedError:
+        # Windows doesn't support SIGTERM
+        pass
+
+
+async def run_bot():
+    """Main entry point for the trading bot with proper task management."""
+    ctx = TradingContext()
+
+    try:
+        # Setup signal handlers
+        await setup_signal_handlers(ctx)
+
+        # Initialize components
+        init_success = await initialize_components(ctx)
+        if not init_success and not ctx.config.get("paper_mode", False):
+            ctx.logger.error("Failed to initialize components")
+            return
+
+        # Log configuration
+        ctx.logger.info(
+            "Loaded configuration: " + json.dumps(ctx.config, indent=2, default=str)
+        )
+
+        # Run test trade in paper mode
+        if ctx.config.get("paper_mode", False):
+            test_trade = {
+                "side": "buy",
+                "amount": "0.1",
+                "price": "100",
+                "symbol": "BTC/USDT",
+            }
+            await ctx.portfolio_manager.simulate_trade(test_trade)
+            summary = ctx.portfolio_manager.get_trade_summary()
+            ctx.logger.info(
+                f"Test simulated trade executed. Trade Summary: {json.dumps(summary, default=str)}"
+            )
+
+        # Start background tasks
+        background_task = ctx.create_task(
+            run_background_tasks(ctx), name="background_tasks"
+        )
+
+        # Wait for shutdown signal
+        await ctx._shutdown_event.wait()
+
+    except Exception as e:
+        ctx.logger.error(f"Critical error in main loop: {e}")
     finally:
-        ctx.running = False
-        # Cleanup
-        if ctx.exchange_interface:
-            await ctx.exchange_interface.close()
-        if ctx.db_connection:
-            await ctx.db_connection.close()
+        # Ensure cleanup happens
+        await ctx.shutdown()
+
+
+def main():
+    """Entry point with proper asyncio handling."""
+    try:
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        pass  # Handled by signal handlers
+    except Exception as e:
+        logging.error(f"Fatal error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(run_bot())
+    main()

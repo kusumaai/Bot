@@ -112,7 +112,7 @@ class RatchetManager:
 
     # update the trailing stops for all active trades
     async def update_trailing_stops(self) -> None:
-        """Update trailing stops for all active trades"""
+        """Update trailing stops for all active trades with enhanced error handling"""
         try:
             if not self.initialized:
                 await self.initialize()
@@ -120,10 +120,15 @@ class RatchetManager:
                     return
 
             async with self._lock:
+                failed_updates = []
                 for trade_id, trade_data in list(self.active_trades.items()):
                     try:
                         current_price = await self._get_current_price(trade_id)
                         if not current_price:
+                            failed_updates.append(trade_id)
+                            self.logger.error(
+                                f"Failed to fetch price for trade {trade_id}"
+                            )
                             continue
 
                         # Check emergency stop conditions
@@ -143,29 +148,76 @@ class RatchetManager:
                         )
 
                     except Exception as e:
+                        failed_updates.append(trade_id)
                         await handle_error_async(
                             e,
                             f"RatchetManager.update_trailing_stops for trade {trade_id}",
                             self.logger,
                         )
 
+                # Handle failed updates
+                if failed_updates:
+                    error_msg = (
+                        f"Failed to update trailing stops for trades: {failed_updates}"
+                    )
+                    self.logger.error(error_msg)
+
+                    # If we have too many failed updates, trigger circuit breaker
+                    if len(failed_updates) >= len(self.active_trades) * Decimal(
+                        "0.5"
+                    ):  # 50% failure threshold
+                        if hasattr(self.ctx, "circuit_breaker"):
+                            await self.ctx.circuit_breaker.trigger_emergency_stop(
+                                f"Critical failure: Multiple trailing stop updates failed - {error_msg}"
+                            )
+                        else:
+                            # If no circuit breaker, close affected trades
+                            for trade_id in failed_updates:
+                                await self._close_trade(
+                                    trade_id,
+                                    "Emergency close: Failed to update trailing stop",
+                                )
+
         except Exception as e:
             await handle_error_async(
                 e, "RatchetManager.update_trailing_stops", self.logger
             )
+            if hasattr(self.ctx, "circuit_breaker"):
+                await self.ctx.circuit_breaker.trigger_emergency_stop(
+                    f"Critical system error in trailing stop updates: {str(e)}"
+                )
 
     async def _get_current_price(self, trade_id: str) -> Optional[Decimal]:
-        """Get current price for a trade"""
-        try:
-            if not self.ctx.market_data:
-                return None
-            data = await self.ctx.market_data.fetch_market_data()
-            return self.nh.to_decimal(data.get("price", 0))
-        except Exception as e:
-            await handle_error_async(
-                e, "RatchetManager._get_current_price", self.logger
-            )
-            return None
+        """Get current price for a trade with enhanced error handling and retries"""
+        MAX_RETRIES = 3
+        RETRY_DELAY = 1  # seconds
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                if not self.ctx.market_data:
+                    raise ValueError("Market data service not available")
+
+                data = await self.ctx.market_data.fetch_market_data()
+                if not data or "price" not in data:
+                    raise ValueError("Invalid market data response")
+
+                price = self.nh.to_decimal(data.get("price", 0))
+                if price <= 0:
+                    raise ValueError(f"Invalid price value: {price}")
+
+                return price
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Price fetch attempt {attempt + 1}/{MAX_RETRIES} failed for {trade_id}: {str(e)}"
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    self.logger.error(f"All price fetch attempts failed for {trade_id}")
+                    return None
+
+        return None
 
     def _calculate_trade_drawdown(
         self, trade_data: Dict[str, Any], current_price: Decimal

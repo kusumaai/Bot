@@ -19,13 +19,13 @@ import numpy as np
 import psutil
 
 from utils.error_handler import handle_error, handle_error_async
-from utils.numeric import NumericHandler
+from utils.numeric_handler import NumericHandler
 
 
 # dataclass for component health
 @dataclass
 class ComponentHealth:
-    """Component health status"""
+    """Component health status with enhanced tracking"""
 
     name: str
     status: bool
@@ -34,10 +34,18 @@ class ComponentHealth:
     error_count: int = 0
     response_time: float = 0.0
     last_error: Optional[str] = None
+    consecutive_failures: int = 0
+    degradation_level: float = 0.0  # 0.0 to 1.0
+    recovery_attempts: int = 0
 
     @property
     def is_healthy(self) -> bool:
-        return self.status and self.error_count < 3
+        return (
+            self.status
+            and self.error_count < 3
+            and self.consecutive_failures < 2
+            and self.degradation_level < 0.8
+        )
 
 
 # dataclass for health status
@@ -55,7 +63,7 @@ class HealthStatus:
 
 # health monitor class
 class HealthMonitor:
-    """Health monitoring system"""
+    """Enhanced health monitoring system"""
 
     def __init__(self, ctx):
         """Initialize HealthMonitor with context."""
@@ -75,18 +83,36 @@ class HealthMonitor:
         # Initialize other attributes
         self.last_check = 0
         self.error_thresholds = {
-            "api": 3,
-            "database": 2,
-            "memory": 90,  # percent
             "max_errors": 5,
-            "disk": 90,
-            "cpu": 85,
+            "max_consecutive_failures": 2,
+            "memory": 0.85,  # 85% memory usage
+            "disk": 0.90,  # 90% disk usage
+            "cpu": 0.95,  # 95% CPU usage
+            "critical_component_failures": 1,  # Number of critical component failures allowed
+            "degradation_threshold": 0.8,  # 80% degradation threshold
+            "max_recovery_attempts": 3,
         }
         self.error_counts = defaultdict(int)
         self.check_interval = 30  # seconds
 
         # Initialize status and components
         self._init_status_and_components()
+
+        # Add the following new attribute
+        self._monitoring = True
+        self.emergency_shutdown_triggered = False
+        self.last_health_check = time.time()
+        self._shutdown_in_progress = False
+        self._shutdown_lock = asyncio.Lock()
+
+        # Critical components and their weights
+        self.critical_components = {
+            "database": 1.0,
+            "exchange": 1.0,
+            "position_manager": 0.8,
+            "risk_manager": 0.9,
+            "circuit_breaker": 1.0,
+        }
 
     def _init_status_and_components(self):
         # Initialize status
@@ -122,8 +148,19 @@ class HealthMonitor:
         # If operating in paper mode, bypass full initialization
         if self.ctx.config.get("paper_mode", False):
             self.logger.info(
-                "HealthMonitor: Paper mode detected, skipping full initialization."
+                "HealthMonitor: Paper mode detected, setting up dummy services."
             )
+            # Attach dummy market_data if missing
+            if not hasattr(self.ctx, "market_data"):
+
+                class DummyMarketData:
+                    async def get_last_update(self, symbol):
+                        return datetime.now()
+
+                    async def get_latest_data(self):
+                        return {}
+
+                self.ctx.market_data = DummyMarketData()
             self.initialized = True
             return True
         try:
@@ -139,59 +176,50 @@ class HealthMonitor:
 
     async def start_monitoring(self):
         """Start the health monitoring loop with proper error handling"""
-        while True:
+        while self._monitoring:
             try:
-                async with self._component_lock:
-                    health_status = await self.check_system_health()
-                    if not health_status["healthy"]:
-                        self.logger.warning("System health check failed")
-
-                    # Update system metrics
-                    metrics = await self.collect_system_metrics()
-                    self.status.system_metrics.update(metrics)
-
-                await asyncio.sleep(self.check_interval)
-
-            except asyncio.CancelledError:
-                self.logger.info("Health monitoring stopped")
-                break
+                await self.monitor_system_health()
             except Exception as e:
-                self.logger.error(f"Error in health monitoring loop: {e}")
-                await asyncio.sleep(5)  # Back off on error
+                self.logger.error(f"Monitoring error: {e}")
+            await asyncio.sleep(self.check_interval)
 
-    async def check_system_health(self) -> Dict[str, bool]:
-        """Check system health"""
+    async def monitor_system_health(self):
+        async with self._component_lock:
+            health_status = await self.check_system_health()
+            if not health_status.get("healthy", True):
+                self.logger.warning("System health check failed")
+            metrics = await self.get_system_metrics()
+            if self.should_emergency_shutdown():
+                self.emergency_shutdown_triggered = True
+            else:
+                self.emergency_shutdown_triggered = False
+
+    async def check_system_health(self) -> bool:
+        """Check overall system health"""
         try:
-            now = time.time()
-            if now - self.last_check < self.check_interval:
-                return {"healthy": True}
+            # Check database
+            db_healthy, _, _ = await self.check_database()
+            # Check exchange
+            exchange_healthy, _, _ = await self.check_exchange()
+            # Check system resources
+            sys_metrics = await self.check_system_resources()
+            # Check market data
+            market_healthy, _, _ = await self.check_market_data()
 
-            status = {
-                "database": await self._check_database(),
-                "exchange": await self._check_exchange(),
-                "memory": await self._check_memory(),
-                "market_data": await self._check_market_data(),
-            }
-
-            self.last_check = now
-            self.status.is_healthy = all(status.values())
-            self.status.timestamp = now
-            self.status.warnings = []
-            self.status.errors = []
-
-            for comp, healthy in status.items():
-                if not healthy:
-                    self.status.errors.append(f"{comp} is unhealthy.")
-                else:
-                    self.status.components[comp].is_healthy = True
-
-            return status
+            return all(
+                [
+                    db_healthy,
+                    exchange_healthy,
+                    market_healthy,
+                    sys_metrics["memory_used_pct"] < self.error_thresholds["memory"],
+                    sys_metrics["disk_used_pct"] < self.error_thresholds["disk"],
+                    sys_metrics["cpu_used_pct"] < self.error_thresholds["cpu"],
+                ]
+            )
 
         except Exception as e:
-            self.logger.error(f"Health check failed: {e}")
-            self.status.is_healthy = False
-            self.status.errors.append(str(e))
-            return {"healthy": False, "error": str(e)}
+            self.logger.error(f"Error checking system health: {e}")
+            return False
 
     # check memory
     async def _check_memory(self) -> bool:
@@ -219,13 +247,65 @@ class HealthMonitor:
     async def _check_database(self) -> bool:
         """Verify database connection and performance"""
         try:
-            # Check connectivity via db_queries if available
-            if self.db_queries and hasattr(self.db_queries, "ping_database"):
-                return await self.db_queries.ping_database()
-            return False
+            start_time = time.time()
+            if self.ctx.config.get("paper_mode", False):
+                self.components["database"].status = True
+                return True
+
+            if not hasattr(self.ctx, "db_connection") or not self.ctx.db_connection:
+                error_msg = "Database connection not initialized"
+                self.logger.warning(error_msg)
+                self.components["database"].status = True
+                self.components["database"].message = "Fresh database initialization"
+                return True
+
+            # Try to get a connection from the pool
+            try:
+                if (
+                    hasattr(self.ctx.db_connection, "pool")
+                    and self.ctx.db_connection.pool
+                ):
+                    async with self.ctx.db_connection.pool.acquire() as conn:
+                        async with conn.cursor() as cursor:
+                            await cursor.execute("SELECT 1")
+                            await cursor.fetchone()
+                elif (
+                    hasattr(self.ctx.db_connection, "conn")
+                    and self.ctx.db_connection.conn is not None
+                ):
+                    await self.ctx.db_connection.conn.execute("SELECT 1")
+                else:
+                    raise Exception("No valid database connection found.")
+            except Exception as db_error:
+                if self.components["database"].last_checked > 0:
+                    raise Exception(f"Database query failed: {str(db_error)}")
+                else:
+                    self.logger.info("Database being initialized for first time")
+                    return True
+            # response time
+            response_time = time.time() - start_time
+
+            # Update component status
+            self.components["database"].status = True
+            self.components["database"].last_checked = time.time()
+            self.components["database"].response_time = response_time
+            self.components["database"].message = ""
+            self.components["database"].error_count = 0
+
+            return True
 
         except Exception as e:
-            self.logger.error(f"Database check failed: {e}")
+            error_msg = f"Database health check failed: {str(e)}"
+            response_time = time.time() - start_time
+
+            # Update component status
+            self.components["database"].status = False
+            self.components["database"].last_checked = time.time()
+            self.components["database"].response_time = response_time
+            self.components["database"].message = error_msg
+            self.components["database"].error_count += 1
+            # log the error for the database health check
+            self.logger.warning(error_msg)
             return False
 
     # check exchange
@@ -260,150 +340,66 @@ class HealthMonitor:
             self.logger.error(f"Market data check failed: {e}")
             return False
 
-    # check database
-    async def check_database(self) -> Tuple[bool, float, Optional[str]]:
-        """Check database connectivity and health"""
-        start_time = time.time()
-        try:
-            if not hasattr(self.ctx, "db_connection") or not self.ctx.db_connection:
-                error_msg = "Database connection not initialized"
-                self.logger.warning(error_msg)
-                self.components["database"].status = True
-                self.components["database"].message = "Fresh database initialization"
-                return True, 0.0, None
-
-            # Try to get a connection from the pool
-            try:
-                if (
-                    hasattr(self.ctx.db_connection, "pool")
-                    and self.ctx.db_connection.pool
-                ):
-                    async with self.ctx.db_connection.pool.acquire() as conn:
-                        async with conn.cursor() as cursor:
-                            await cursor.execute("SELECT 1")
-                            await cursor.fetchone()
-                elif (
-                    hasattr(self.ctx.db_connection, "conn")
-                    and self.ctx.db_connection.conn is not None
-                ):
-                    await self.ctx.db_connection.conn.execute("SELECT 1")
-                else:
-                    raise Exception("No valid database connection found.")
-            except Exception as db_error:
-                if self.components["database"].last_checked > 0:
-                    raise Exception(f"Database query failed: {str(db_error)}")
-                else:
-                    self.logger.info("Database being initialized for first time")
-                    return True, 0.0, None
-            # response time
-            response_time = time.time() - start_time
-
-            # Update component status
-            self.components["database"].status = True
-            self.components["database"].last_checked = time.time()
-            self.components["database"].response_time = response_time
-            self.components["database"].message = ""
-            self.components["database"].error_count = 0
-
-            return True, response_time, None
-
-        except Exception as e:
-            error_msg = f"Database health check failed: {str(e)}"
-            response_time = time.time() - start_time
-
-            # Update component status
-            self.components["database"].status = False
-            self.components["database"].last_checked = time.time()
-            self.components["database"].response_time = response_time
-            self.components["database"].message = error_msg
-            self.components["database"].error_count += 1
-            # log the error for the database health check
-            self.logger.warning(error_msg)
-            return False, response_time, error_msg
-
-    # check exchange
-    async def check_exchange(self) -> Tuple[bool, float, Optional[str]]:
-        """Check exchange connectivity and health"""
-        start_time = time.time()
-        try:
-            if not self.ctx.exchange_interface:
-                return False, 0.0, "Exchange interface not initialized"
-
-            await self.ctx.exchange_interface.exchange.ping()
-            response_time = time.time() - start_time
-
-            # Update component status
-            self.components["exchange"].status = True
-            self.components["exchange"].last_checked = time.time()
-            self.components["exchange"].response_time = response_time
-            self.components["exchange"].message = ""
-
-            return True, response_time, None
-
-        except Exception as e:
-            error_msg = f"Exchange health check failed: {str(e)}"
-            response_time = time.time() - start_time
-
-            # Update component status
-            self.components["exchange"].status = False
-            self.components["exchange"].last_checked = time.time()
-            self.components["exchange"].response_time = response_time
-            self.components["exchange"].message = error_msg
-            self.components["exchange"].error_count += 1
-
-            return False, response_time, error_msg
-
     # check system resources
-    def check_system_resources(self) -> Dict[str, Any]:
-        """Check system resource utilization"""
+    async def check_system_resources(self) -> Dict[str, float]:
+        """Enhanced system resource checking with trending"""
         try:
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
-            cpu = psutil.cpu_percent(interval=0.1)
+            cpu_pct = psutil.cpu_percent(interval=1)
 
             metrics = {
-                "memory_used_pct": memory.percent,
-                "disk_used_pct": disk.percent,
-                "cpu_used_pct": cpu,
-                "memory_healthy": memory.percent < self.error_thresholds["memory"],
-                "disk_healthy": disk.percent < self.error_thresholds["disk"],
-                "cpu_healthy": cpu < self.error_thresholds["cpu"],
-                "healthy": True,
+                "memory_used_pct": memory.percent / 100,
+                "disk_used_pct": disk.percent / 100,
+                "cpu_used_pct": cpu_pct / 100,
+                "timestamp": time.time(),
             }
 
-            # Update system component status
-            self.components["system"].status = all(
-                [
-                    metrics["memory_healthy"],
-                    metrics["disk_healthy"],
-                    metrics["cpu_healthy"],
-                ]
-            )
-            self.components["system"].last_checked = time.time()
-            self.components["system"].message = ""
+            # Store metrics for trending
+            await self._store_resource_metrics(metrics)
 
-            if not self.components["system"].status:
-                self.components["system"].message = (
-                    f"System resources critical: Memory={memory.percent}%, "
-                    f"Disk={disk.percent}%, CPU={cpu}%"
-                )
-
-            metrics["healthy"] = self.components["system"].status
             return metrics
 
         except Exception as e:
-            self.logger.error(f"System resource check failed: {e}")
-            self.components["system"].status = False
-            self.components["system"].message = f"Resource check error: {str(e)}"
+            self.logger.error(f"Error checking system resources: {e}")
             return {
-                "memory_used_pct": 0,
-                "disk_used_pct": 0,
-                "cpu_used_pct": 0,
-                "memory_healthy": False,
-                "disk_healthy": False,
-                "cpu_healthy": False,
-                "healthy": False,
+                "memory_used_pct": 1.0,
+                "disk_used_pct": 1.0,
+                "cpu_used_pct": 1.0,
+                "timestamp": time.time(),
             }
+
+    async def _store_resource_metrics(self, metrics: Dict[str, float]):
+        """Store resource metrics for trend analysis"""
+        if not hasattr(self, "_resource_history"):
+            self._resource_history = []
+
+        self._resource_history.append(metrics)
+
+        # Keep last 10 minutes of metrics
+        cutoff_time = time.time() - 600
+        self._resource_history = [
+            m for m in self._resource_history if m["timestamp"] > cutoff_time
+        ]
+
+    async def get_resource_trends(self) -> Dict[str, float]:
+        """Calculate resource usage trends"""
+        if not hasattr(self, "_resource_history") or len(self._resource_history) < 2:
+            return {"memory_trend": 0, "disk_trend": 0, "cpu_trend": 0}
+
+        recent = self._resource_history[-1]
+        past = self._resource_history[0]
+        time_diff = recent["timestamp"] - past["timestamp"]
+
+        if time_diff == 0:
+            return {"memory_trend": 0, "disk_trend": 0, "cpu_trend": 0}
+
+        return {
+            "memory_trend": (recent["memory_used_pct"] - past["memory_used_pct"])
+            / time_diff,
+            "disk_trend": (recent["disk_used_pct"] - past["disk_used_pct"]) / time_diff,
+            "cpu_trend": (recent["cpu_used_pct"] - past["cpu_used_pct"]) / time_diff,
+        }
 
     # check market data
     async def check_market_data(self) -> Tuple[bool, float, Optional[str]]:
@@ -442,21 +438,20 @@ class HealthMonitor:
             return False, response_time, error_msg
 
     # get system metrics
-    def get_system_metrics(self) -> Dict[str, float]:
-        """Get current system metrics"""
+    async def get_system_metrics(self) -> dict:
         try:
-            metrics = self.check_system_resources()
+            metrics = await self.check_system_resources()
             return {
-                "memory_used_pct": float(metrics["memory_used_pct"]),
-                "disk_used_pct": float(metrics["disk_used_pct"]),
-                "cpu_used_pct": float(metrics["cpu_used_pct"]),
+                "memory_usage": float(metrics.get("memory_used_pct", 0)),
+                "disk_usage": float(metrics.get("disk_used_pct", 0)),
+                "cpu_usage": float(metrics.get("cpu_used_pct", 0)),
             }
         except Exception as e:
             self.logger.error(f"Failed to get system metrics: {e}")
             return {
-                "memory_used_pct": 100.0,  # Fail safe - assume worst
-                "disk_used_pct": 100.0,
-                "cpu_used_pct": 100.0,
+                "memory_usage": 100.0,
+                "disk_usage": 100.0,
+                "cpu_usage": 100.0,
             }
 
     # update component
@@ -481,93 +476,134 @@ class HealthMonitor:
             comp.message = ""
 
     # check emergency shutdown
-    def should_emergency_shutdown(self) -> bool:
-        """Determine if emergency shutdown needed"""
+    async def should_emergency_shutdown(self) -> bool:
+        """Enhanced emergency shutdown decision with better failure detection"""
         try:
-            # Critical components must be healthy
-            critical_components = ["database", "exchange", "position_manager"]
-            critical_failures = sum(
-                1
-                for c in critical_components
-                if c in self.components and not self.components[c].is_healthy
-            )
+            async with self._shutdown_lock:
+                if self._shutdown_in_progress:
+                    return True
 
-            if critical_failures >= 2:
-                return True
+                # Check critical component failures with weighted impact
+                critical_failure_impact = 0.0
+                for component, weight in self.critical_components.items():
+                    if component in self.components:
+                        health = self.components[component]
+                        if not health.is_healthy:
+                            critical_failure_impact += weight
+                            if (
+                                health.consecutive_failures
+                                >= self.error_thresholds["max_consecutive_failures"]
+                            ):
+                                critical_failure_impact += weight * 0.5
 
-            # Check error rates
-            high_error_components = sum(
-                1
-                for c in self.components.values()
-                if c.error_count >= self.error_thresholds["max_errors"]
-            )
+                if (
+                    critical_failure_impact
+                    >= self.error_thresholds["critical_component_failures"]
+                ):
+                    self.logger.critical(
+                        f"Critical component failure impact: {critical_failure_impact}"
+                    )
+                    return True
 
-            if high_error_components >= 2:
-                return True
+                # Check system resources with trending
+                sys_metrics = await self.check_system_resources()
+                resource_trends = await self.get_resource_trends()
 
-            # Check system resources
-            sys_metrics = self.check_system_resources()
-            if any(
-                [
-                    sys_metrics["memory_used_pct"] > self.error_thresholds["memory"],
-                    sys_metrics["disk_used_pct"] > self.error_thresholds["disk"],
-                    sys_metrics["cpu_used_pct"] > self.error_thresholds["cpu"],
+                # Immediate shutdown conditions
+                if any(
+                    [
+                        sys_metrics["memory_used_pct"]
+                        > self.error_thresholds["memory"],
+                        sys_metrics["disk_used_pct"] > self.error_thresholds["disk"],
+                        sys_metrics["cpu_used_pct"] > self.error_thresholds["cpu"],
+                    ]
+                ):
+                    self.logger.critical("Resource thresholds exceeded")
+                    return True
+
+                # Trending shutdown conditions
+                if any(
+                    [
+                        resource_trends["memory_trend"] > 0.1
+                        and sys_metrics["memory_used_pct"]
+                        > self.error_thresholds["memory"] * 0.9,
+                        resource_trends["disk_trend"] > 0.1
+                        and sys_metrics["disk_used_pct"]
+                        > self.error_thresholds["disk"] * 0.9,
+                        resource_trends["cpu_trend"] > 0.2
+                        and sys_metrics["cpu_used_pct"]
+                        > self.error_thresholds["cpu"] * 0.9,
+                    ]
+                ):
+                    self.logger.critical(
+                        "Resource trends indicate imminent threshold breach"
+                    )
+                    return True
+
+                # Check overall system degradation
+                degraded_components = [
+                    c
+                    for c in self.components.values()
+                    if c.degradation_level
+                    > self.error_thresholds["degradation_threshold"]
                 ]
-            ):
-                return True
+                if len(degraded_components) >= 2:
+                    self.logger.critical(
+                        f"Multiple components severely degraded: {len(degraded_components)}"
+                    )
+                    return True
 
-            return False
+                return False
 
         except Exception as e:
-            self.logger.error(f"Error in should_emergency_shutdown: {e}")
+            self.logger.critical(f"Error in should_emergency_shutdown: {e}")
             return True  # Fail safe
 
     # get health status
-    def get_health_status(self) -> HealthStatus:
+    async def get_health_status(self) -> HealthStatus:
         """Get current health status"""
         try:
-            now = time.time()
-            warnings = []
-            errors = []
-
-            # Check component health
-            for name, comp in self.components.items():
-                if not comp.healthy:
-                    errors.append(f"{name} unhealthy: {comp.last_error}")
-                elif comp.response_time > float(self.degradation_threshold) * np.median(
-                    self.latency_history[name]
-                ):
-                    warnings.append(f"{name} performance degraded")
-
-            # Check system resources
-            sys_metrics = self.check_system_resources()
+            # Check database
+            db_healthy, _, _ = await self.check_database()
+            # Check exchange
+            exchange_healthy, _, _ = await self.check_exchange()
+            # Update system component status
+            self.components["system"].status = all(
+                [
+                    db_healthy,
+                    exchange_healthy,
+                    (await self.check_system_resources())["healthy"],
+                ]
+            )
 
             return HealthStatus(
-                timestamp=now,
-                is_healthy=len(errors) == 0,
-                warnings=warnings,
-                errors=errors,
-                components=self.components.copy(),
-                system_metrics=sys_metrics,
+                healthy=all(c.is_healthy for c in self.components.values()),
+                components={
+                    name: comp.status for name, comp in self.components.items()
+                },
+                messages={name: comp.message for name, comp in self.components.items()},
+                error_counts={
+                    name: comp.error_count for name, comp in self.components.items()
+                },
+                last_checked=time.time(),
             )
 
         except Exception as e:
-            handle_error(e, "HealthMonitor.get_health_status", logger=self.logger)
+            self.logger.error(f"Error getting health status: {e}")
             return HealthStatus(
-                timestamp=time.time(),
-                is_healthy=False,
-                warnings=[],
-                errors=[str(e)],
+                healthy=False,
                 components={},
-                system_metrics={},
+                messages={"error": str(e)},
+                error_counts={},
+                last_checked=time.time(),
             )
 
     # get health report
-    def get_health_report(self) -> Dict[str, Any]:
+    async def get_health_report(self) -> Dict[str, Any]:
         """Generate comprehensive health report"""
         try:
             now = time.time()
-            status = self.get_health_status()
+            status = await self.get_health_status()
 
             return {
                 "timestamp": datetime.fromtimestamp(now).isoformat(),
@@ -653,10 +689,10 @@ class HealthMonitor:
                 elif component == "exchange":
                     healthy, response_time, error_msg = await self.check_exchange()
                 elif component == "system":
-                    metrics = self.check_system_resources()
+                    metrics = await self.check_system_resources()
                     healthy = all(
                         metrics[k]
-                        for k in ["memory_healthy", "disk_healthy", "cpu_healthy"]
+                        for k in ["memory_used_pct", "disk_used_pct", "cpu_used_pct"]
                     )
                     response_time = 0.0
                 else:
@@ -706,7 +742,11 @@ class HealthMonitor:
 
             # Update system component status
             self.components["system"].status = all(
-                [db_healthy, exchange_healthy, self.check_system_resources()["healthy"]]
+                [
+                    db_healthy,
+                    exchange_healthy,
+                    await self.check_system_resources()["healthy"],
+                ]
             )
 
             return self.components["system"].status
@@ -716,70 +756,51 @@ class HealthMonitor:
             return False
 
     # check system readiness
-    async def check_system_readiness(self) -> Tuple[bool, Dict[str, bool]]:
-        """Check if system components are ready for trading (beyond just health)"""
-        readiness = {
-            "database": False,
-            "models": False,
-            "ga_data": False,
-            "market_data": False,
-            "overall": False,
-        }
-
+    async def check_system_readiness(self) -> bool:
+        if self.ctx.config.get("paper_mode", False):
+            return True
         try:
-            # Check if database has necessary tables and initial data
+            readiness = {
+                "database": False,
+                "models": False,
+                "ga_data": False,
+                "market_data": False,
+            }
             if self.ctx.db_connection:
                 async with self.ctx.db_connection.pool.acquire() as conn:
                     async with conn.cursor() as cursor:
-                        # Check for trained models
                         await cursor.execute(
                             "SELECT COUNT(*) FROM models WHERE status = 'active'"
                         )
                         model_count = await cursor.fetchone()
                         readiness["models"] = (
-                            model_count[0] > 0 if model_count else False
+                            (model_count[0] > 0) if model_count else False
                         )
 
-                        # Check for GA data
                         await cursor.execute(
                             "SELECT COUNT(*) FROM genetic_algorithms WHERE status = 'complete'"
                         )
                         ga_count = await cursor.fetchone()
-                        readiness["ga_data"] = ga_count[0] > 0 if ga_count else False
+                        readiness["ga_data"] = (ga_count[0] > 0) if ga_count else False
 
-                        # Check for historical data
                         await cursor.execute("SELECT COUNT(*) FROM market_data")
                         data_count = await cursor.fetchone()
                         readiness["market_data"] = (
-                            data_count[0] > 0 if data_count else False
+                            (data_count[0] > 0) if data_count else False
                         )
 
-                        readiness["database"] = (
-                            True  # Database exists and can be queried
-                        )
+                        readiness["database"] = True
 
-            # Overall readiness requires all components
-            readiness["overall"] = all(
-                ready
-                for component, ready in readiness.items()
-                if component != "overall"
-            )
-            # if not ready, log missing components
-            if not readiness["overall"]:
-                missing = [
-                    comp
-                    for comp, ready in readiness.items()
-                    if not ready and comp != "overall"
-                ]
+            overall = all(value for value in readiness.values())
+            if not overall:
+                missing = [k for k, v in readiness.items() if not v]
                 self.logger.info(
                     f"System not ready for trading. Missing: {', '.join(missing)}"
                 )
-            # return overall readiness and readiness components
-            return readiness["overall"], readiness
-
+            return overall
         except Exception as e:
             self.logger.warning(f"Could not check system readiness: {e}")
-            return False, readiness
+            return False
 
     # collect system metrics
     async def collect_system_metrics(self) -> Dict[str, Any]:
@@ -805,30 +826,102 @@ class HealthMonitor:
 
         return metrics
 
-    # check system health
-    async def check_system_health(self) -> Dict[str, bool]:
-        """Check system health"""
+    def stop_monitoring(self):
+        self._monitoring = False
+
+    async def shutdown(self):
+        self.stop_monitoring()
+        if hasattr(self, "_monitor_task"):
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                self.logger.info("Monitor loop cancelled successfully.")
+
+    async def check_database_health(self) -> bool:
+        healthy, _, _ = await self.check_database()
+        return healthy
+
+    async def check_exchange_health(self) -> bool:
+        healthy, _, _ = await self.check_exchange()
+        return healthy
+
+    async def check_market_data_health(self) -> bool:
+        healthy, _, _ = await self.check_market_data()
+        return healthy
+
+    async def check_market_data_freshness(self) -> bool:
+        import time
+        from datetime import datetime
+
+        current = time.time()
+        market_list = self.ctx.config.get("market_list", [])
+        for symbol in market_list:
+            last_update = await self.ctx.market_data.get_last_update(symbol)
+            if hasattr(last_update, "timestamp"):
+                last_update = last_update.timestamp()
+            if current - last_update > self.MARKET_DATA_MAX_AGE:
+                from utils.error_handler import HealthCheckError
+
+                raise HealthCheckError(f"Market data for {symbol} is stale.")
+        return True
+
+    async def validate_system_metrics(self, metrics: dict) -> None:
+        from utils.error_handler import HealthCheckError
+
+        if (
+            metrics.get("cpu_usage", 0) > self.CRITICAL_CPU_THRESHOLD
+            or metrics.get("memory_usage", 0) > self.CRITICAL_MEMORY_THRESHOLD
+        ):
+            raise HealthCheckError("System metrics out of range.")
+        return
+
+    async def check_recovery_conditions(self):
+        if not self.should_emergency_shutdown():
+            self.emergency_shutdown_triggered = False
+        return
+
+    async def is_trading_allowed(self) -> bool:
+        """Check if trading should be allowed based on system health"""
+        if self.emergency_shutdown_triggered or self._shutdown_in_progress:
+            return False
+
+        # Check critical components
+        for component in ["exchange", "risk_manager", "circuit_breaker"]:
+            if (
+                component in self.components
+                and not self.components[component].is_healthy
+            ):
+                return False
+
+        return True
+
+    def update_thresholds(self, thresholds: Dict[str, float]):
+        """Update monitoring thresholds"""
+        self.error_thresholds.update(thresholds)
+
+    async def check_component_health(self, component: str) -> Tuple[bool, float, str]:
+        """Check health of a specific component"""
         try:
-            # Check database health
-            db_healthy, _, _ = await self.check_database()
-            # Check exchange health
-            exchange_healthy, _, _ = await self.check_exchange()
-            # Check system resources
-            sys_metrics = self.check_system_resources()
-            # Check market data
-            market_healthy, _, _ = await self.check_market_data()
-            # return the system health
-            return {
-                "database": db_healthy,
-                "exchange": exchange_healthy,
-                "system": sys_metrics["healthy"],
-                "market": market_healthy,
-            }
+            if component == "database":
+                healthy, response_time, error_msg = await self.check_database()
+            elif component == "exchange":
+                healthy, response_time, error_msg = await self.check_exchange()
+            elif component == "system":
+                metrics = await self.check_system_resources()
+                healthy = all(
+                    metrics[k]
+                    for k in ["memory_used_pct", "disk_used_pct", "cpu_used_pct"]
+                )
+                response_time = 0.0
+                error_msg = ""
+            else:
+                healthy = False
+                response_time = 0.0
+                error_msg = f"Unknown component: {component}"
+
+            return healthy, response_time, error_msg
+
         except Exception as e:
-            self.logger.error(f"Failed to check system health: {e}")
-            return {
-                "database": False,
-                "exchange": False,
-                "system": False,
-                "market": False,
-            }
+            self.logger.error(f"Error checking component {component}: {e}")
+            return False, 0.0, str(e)

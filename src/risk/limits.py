@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from bot_types.base_types import RiskLimits as BaseRiskLimits
-from bot_types.base_types import ValidationResult
-from utils.error_handler import handle_error
+from src.bot_types.base_types import RiskLimits as BaseRiskLimits
+from src.bot_types.base_types import ValidationResult
+from src.utils.error_handler import handle_error
 
 # Re-export the RiskLimits class from base_types
 RiskLimits = BaseRiskLimits

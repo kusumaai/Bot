@@ -23,27 +23,31 @@ A robust automated trading system with advanced safety features, risk management
 ## Installation
 
 1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/yourusername/KillaBot.git
-   cd KillaBot
-   ```
+
+    \`\`\`bash
+    git clone <https://github.com/yourusername/KillaBot.git>
+    cd KillaBot
+    \`\`\`
 
 2. **Set Up a Virtual Environment:**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/MacOS
-   venv\Scripts\activate     # Windows
-   ```
+
+    \`\`\`bash
+    python -m venv venv
+    source venv/bin/activate  # Linux/MacOS
+    venv\Scripts\activate     # Windows
+    \`\`\`
 
 3. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+
+    \`\`\`bash
+    pip install -r requirements.txt
+    \`\`\`
 
 4. **(Optional) Install Development Dependencies via Poetry:**
-   ```bash
-   poetry install
-   ```
+
+    \`\`\`bash
+    poetry install
+    \`\`\`
 
 ## Configuration
 
@@ -60,19 +64,25 @@ The risk configuration is further validated and managed in `src/config/risk_conf
 ## Testing
 
 Run the test suite:
-```bash
-# Run all tests
+
+\`\`\`bash
+
+### Run all tests
+
 pytest tests/
 
-# Run specific tests
+### Run specific tests
+
 pytest tests/test_risk_manager.py
 pytest tests/validation_tests.py
 
-# Run with verbose output
+### Run with verbose output
+
 pytest -v tests/
-```
+\`\`\`
 
 The test suite includes:
+
 - Risk management system tests
 - Trading validation tests
 - Circuit breaker validation
@@ -88,75 +98,84 @@ The system includes comprehensive monitoring:
 - Error tracking and logging
 - System resource monitoring
 
-Monitor logs:
-```bash
+### Monitor logs
+
+\`\`\`bash
 tail -f logs/trading.log  # Main trading log
 tail -f logs/error.log   # Error log
-```
+\`\`\`
 
 ## Error Handling
 
 The system uses a centralized error handling system:
-```python
+
+\`\`\`python
 try:
     # Trading operations
 except Exception as e:
     handle_error(e, "component.function_name", logger=logger)
-```
+\`\`\`
 
 ## Development
 
 1. **Code Style**
-- Black formatting
-- Flake8 linting
-- MyPy type checking
-- Pre-commit hooks
+
+    - Black formatting
+    - Flake8 linting
+    - MyPy type checking
+    - Pre-commit hooks
 
 2. **Testing**
-- Unit tests
-- Integration tests
-- Coverage reports
+
+    - Unit tests
+    - Integration tests
+    - Coverage reports
 
 3. **Documentation**
-- Code documentation
-- API documentation
-- Testing documentation
+
+    - Code documentation
+    - API documentation
+    - Testing documentation
 
 ## Safety Features
 
 1. **Circuit Breaker**
-- Maximum drawdown protection
-- Daily loss limits
-- Trade frequency limits
-- Cooldown periods
+
+    - Maximum drawdown protection
+    - Daily loss limits
+    - Trade frequency limits
+    - Cooldown periods
 
 2. **Risk Management**
-- Position sizing rules
-- Correlation limits
-- Volatility checks
-- Emergency stops
+
+    - Position sizing rules
+    - Correlation limits
+    - Volatility checks
+    - Emergency stops
 
 3. **Data Validation**
-- Real-time quality checks
-- Historical data validation
-- Signal verification
-- Market condition monitoring
 
+    - Real-time quality checks
+    - Historical data validation
+    - Signal verification
+    - Market condition monitoring
 
 ## CI/CD Integration
 
-1. **GitHub Actions** 
+1. **GitHub Actions**
 
-3. **Async Testing** 
+2. **Async Testing**
 
 ## Usage
 
 Launch the bot via the command line:
-```bash
+
+\`\`\`bash
 python -m src.execution.bot
-```
+\`\`\`
 
 **Component Initialization Sequence:**
+
 1. **Database:** Establishes the SQLite connection and initializes the schema.
 2. **Risk & Portfolio Managers:** Sets up real-time risk controls and portfolio monitoring.
 3. **Exchange & Market Data:** Connects to all configured exchanges for live market data.
@@ -164,25 +183,26 @@ python -m src.execution.bot
 5. **Ratchet Manager:** Applies dynamic stop adjustments as market conditions evolve.
 6. **Main Loop:** Enters the asynchronous trading loop, executing strategies and managing orders.
 
----
-
-## Testing
+## Unit Testing
 
 KillaBot comes with a robust test suite structured as follows:
+
 - **Unit Tests:** Located in `tests/unit/`
 - **Integration Tests:** Located in `tests/integration/`
 - **Validation Tests:** A comprehensive suite found in `tests/validation_tests.py`
 
 Run all tests with:
-```bash
+
+\`\`\`bash
 pytest tests/
-```
+\`\`\`
 
 For specific sections, run:
-```bash
+
+\`\`\`bash
 pytest tests/test_risk_manager.py
 pytest tests/validation_tests.py
-```
+\`\`\`
 
 ---
 
@@ -206,6 +226,7 @@ pytest tests/validation_tests.py
 ## Backtesting
 
 The backtesting framework (found in `src/backtesting/backtester.py`) allows you to evaluate your strategies using historical data. Key aspects include:
+
 - **Simulation:** Run strategy simulations over custom date ranges.
 - **Analytics:** Generate detailed trade statistics (PnL, win/loss ratios, fees paid, etc.).
 - **Strategy Evaluation:** Integrates both ML signals and genetic algorithm optimizations for continuous strategy improvement.
@@ -220,7 +241,7 @@ Developed by Phil Sanderson and Mike Van-Dijk
 
 ## Contact
 
-For support or inquiries, please contact philsanderson@pm.me
+For support or inquiries, please contact <philsanderson@pm.me>
 
 ---
 

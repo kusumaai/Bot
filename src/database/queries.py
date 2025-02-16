@@ -2,16 +2,19 @@
 # src/database/queries.py
 """
 Module: database/queries.py
-Provides safe database query implementations.
+Provides safe database query implementations with proper concurrency handling.
 """
 import asyncio
 import json
 import logging
+import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiosqlite
+from aiosqlite import Error as SQLiteError
 
 from database.database import execute_sql
 from utils.error_handler import DatabaseError, handle_error_async
@@ -21,6 +24,11 @@ from utils.numeric_handler import NumericHandler
 from .connection import DatabaseConnection
 
 logger = logging.getLogger("TradingBot")
+
+# Constants for SQLite retry handling
+MAX_RETRIES = 3
+RETRY_DELAY = 0.1  # seconds
+BUSY_TIMEOUT = 5000  # milliseconds
 
 
 class QueryBuilder:
@@ -86,54 +94,177 @@ class QueryBuilder:
 
 
 class DatabaseQueries:
-    """Safe database query implementations"""
+    """Database queries with proper concurrency handling"""
 
     def __init__(self, connection=None, db_path=None, logger=None):
-        self.connection = connection
+        self.db_connection = connection
         self.db_path = db_path
-        self.logger = logger
+        self.logger = logger or logging.getLogger(__name__)
         self.nh = NumericHandler()
-        db_info = config.get("database", {})
-        db_path = db_info.get("dbname", db_info.get("path", "data/trading.db"))
-        self.db_connection = DatabaseConnection(db_path, logger=logger)
         self._lock = asyncio.Lock()
         self.query_builder = QueryBuilder()
-        # Alias so that store_order is available if needed by tests.
-        self.store_order = self.store_trade
+        self.initialized = False
 
     async def initialize(self) -> bool:
-        """Initialize database connection"""
+        """Initialize database connection with proper concurrency settings"""
         try:
-            # Initialize the underlying connection first
-            if not await self.db_connection.initialize():
-                return False
-
-            # Test the connection
-            async with self._lock:
-                query = "SELECT 1"
-                await self.db_connection.execute_sql(query)
-                self.logger.info("Database connection initialized successfully")
+            if self.initialized:
                 return True
 
-        except DatabaseError as e:
-            self.logger.error(f"Failed to initialize database connection: {e}")
-            return False
+            if not self.db_connection and self.db_path:
+                self.db_connection = DatabaseConnection(self.db_path)
+
+            if not self.db_connection:
+                self.logger.error("No database connection available")
+                return False
+
+            # Set busy timeout and journal mode
+            async with self.get_connection() as conn:
+                await conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT}")
+                await conn.execute("PRAGMA journal_mode = WAL")
+                await conn.execute("PRAGMA synchronous = NORMAL")
+
+            self.initialized = True
+            return True
+
         except Exception as e:
-            self.logger.error(f"Unexpected error during database initialization: {e}")
+            self.logger.error(f"Failed to initialize database: {e}")
             return False
 
-    async def execute(
-        self, query: str, params: Union[List[Any], Tuple[Any, ...]] = ()
+    async def execute_with_retry(
+        self,
+        query: str,
+        params: Union[List[Any], Tuple[Any, ...]] = (),
+        retries: int = MAX_RETRIES,
     ) -> Any:
-        """Execute a SQL query with parameters"""
+        """Execute a query with retry logic for handling SQLite concurrency"""
+        last_error = None
+
+        for attempt in range(retries):
+            try:
+                async with self.get_connection() as conn:
+                    async with conn.cursor() as cursor:
+                        await cursor.execute(query, params)
+                        await conn.commit()
+                        return await cursor.fetchall()
+
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    last_error = e
+                    if attempt < retries - 1:
+                        await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                raise DatabaseError(f"Database locked after {retries} retries: {e}")
+
+            except SQLiteError as e:
+                raise DatabaseError(f"SQLite error: {e}")
+
+            except Exception as e:
+                raise DatabaseError(f"Unexpected error: {e}")
+
+        raise DatabaseError(
+            f"Failed after {retries} attempts. Last error: {last_error}"
+        )
+
+    async def execute_transaction(
+        self, queries: List[Tuple[str, Union[List[Any], Tuple[Any, ...]]]]
+    ) -> bool:
+        """Execute multiple queries in a single transaction with proper locking"""
+        async with self._lock:  # Ensure only one transaction at a time
+            try:
+                async with self.get_connection() as conn:
+                    async with conn.cursor() as cursor:
+                        await cursor.execute("BEGIN TRANSACTION")
+
+                        for query, params in queries:
+                            await cursor.execute(query, params)
+
+                        await conn.commit()
+                        return True
+
+            except Exception as e:
+                self.logger.error(f"Transaction failed: {e}")
+                try:
+                    await conn.rollback()
+                except Exception as rollback_error:
+                    self.logger.error(f"Rollback failed: {rollback_error}")
+                raise DatabaseError(f"Transaction failed: {e}")
+
+    async def store_trade(self, trade: Dict[str, Any]) -> bool:
+        """Store trade data with proper concurrency handling and validation"""
         try:
-            return await self.db_connection.execute_sql(query, list(params))
+            # Validate required fields
+            required_fields = ["symbol", "side", "amount", "price", "timestamp"]
+            missing_fields = [field for field in required_fields if field not in trade]
+            if missing_fields:
+                raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
+
+            # Validate side
+            if trade["side"] not in ["buy", "sell"]:
+                raise ValueError(f"Invalid side: {trade['side']}")
+
+            # Convert and validate numeric values
+            amount_decimal = self.nh.to_decimal(trade["amount"])
+            price_decimal = self.nh.to_decimal(trade["price"])
+            if amount_decimal <= 0 or price_decimal <= 0:
+                raise ValueError("Amount and price must be positive")
+
+            timestamp_iso = datetime.fromtimestamp(
+                trade["timestamp"], tz=timezone.utc
+            ).isoformat()
+
+            # Prepare query and parameters
+            query = """
+                INSERT INTO trades (
+                    symbol, side, amount, price, timestamp
+                ) VALUES (?, ?, ?, ?, ?)
+            """
+            params = (
+                trade["symbol"],
+                trade["side"],
+                str(amount_decimal),
+                str(price_decimal),
+                timestamp_iso,
+            )
+
+            # Execute with retry logic
+            await self.execute_with_retry(query, params)
+            return True
+
+        except (InvalidOperation, KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"Invalid trade data: {e}")
+            return False
         except DatabaseError as e:
-            self.logger.error(f"Database execution error: {e}")
-            raise
+            self.logger.error(f"Database error storing trade: {e}")
+            return False
         except Exception as e:
-            self.logger.error(f"Unexpected error in execute: {e}")
-            raise DatabaseError(f"Unexpected error in execute: {e}")
+            self.logger.error(f"Unexpected error storing trade: {e}")
+            return False
+
+    async def get_trades(self, symbol: str) -> List[Dict[str, Any]]:
+        """Get trades with proper concurrency handling"""
+        query = "SELECT * FROM trades WHERE symbol = ?"
+        try:
+            rows = await self.execute_with_retry(query, (symbol,))
+            return [dict(row) for row in rows]
+        except DatabaseError as e:
+            self.logger.error(f"Failed to get trades for {symbol}: {e}")
+            return []
+
+    @asynccontextmanager
+    async def get_connection(self):
+        """Get a database connection with proper timeout settings"""
+        conn = None
+        try:
+            conn = await aiosqlite.connect(
+                self.db_path,
+                timeout=BUSY_TIMEOUT / 1000.0,  # Convert to seconds
+                isolation_level=None,  # Enable autocommit mode
+            )
+            yield conn
+        finally:
+            if conn:
+                await conn.close()
 
     async def insert_candle_data(
         self, symbol: str, timeframe: str, candles: List[Dict[str, Any]]
@@ -167,7 +298,7 @@ class DatabaseQueries:
                     candle["close"],
                     candle["volume"],
                 ]
-                await self.execute(query, params)
+                await self.execute_with_retry(query, params)
             return True
         except Exception as e:
             raise DatabaseError(f"Failed to insert candle data for {symbol}: {str(e)}")
@@ -192,7 +323,7 @@ class DatabaseQueries:
         )
 
         try:
-            results = await self.execute(query, params)
+            results = await self.execute_with_retry(query, params)
             return results or []
         except Exception as e:
             raise DatabaseError(
@@ -228,7 +359,7 @@ class DatabaseQueries:
                 datetime.now(timezone.utc).timestamp(),
                 json.dumps(metadata),
             ]
-            await self.execute(query, params)
+            await self.execute_with_retry(query, params)
             return True
         except Exception as e:
             raise DatabaseError(f"Failed to store trade signal for {symbol}: {str(e)}")
@@ -261,7 +392,7 @@ class DatabaseQueries:
         )
 
         try:
-            results = await self.execute(query, params)
+            results = await self.execute_with_retry(query, params)
             return results or []
         except Exception as e:
             raise DatabaseError(f"Failed to fetch active positions: {str(e)}")
@@ -293,7 +424,7 @@ class DatabaseQueries:
             metadata_json = json.dumps(metadata) if metadata else None
             updated_at = datetime.utcnow().isoformat()
             params = [status, metadata_flag, metadata_json, updated_at, position_id]
-            await self.execute(query, params)
+            await self.execute_with_retry(query, params)
 
         except (InvalidOperation, TypeError) as e:
             self.logger.error(f"Invalid data when updating position {position_id}: {e}")
@@ -306,71 +437,6 @@ class DatabaseQueries:
                 f"Unexpected error when updating position {position_id}: {e}"
             )
             raise DatabaseError(f"Unexpected error: {e}")
-
-    async def store_trade(self, trade: Dict[str, Any]) -> bool:
-        """Store trade data with validation"""
-        query = """
-            INSERT INTO trades (
-                symbol, side, amount, price, timestamp
-            ) VALUES (?, ?, ?, ?, ?)
-        """
-        try:
-            # Validate required fields
-            required_fields = ["symbol", "side", "amount", "price", "timestamp"]
-            missing_fields = [field for field in required_fields if field not in trade]
-            if missing_fields:
-                raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
-
-            # Validate side
-            if trade["side"] not in ["buy", "sell"]:
-                raise ValueError(f"Invalid side: {trade['side']}")
-
-            # Convert and validate numeric values
-            amount_decimal = self.nh.to_decimal(trade["amount"])
-            price_decimal = self.nh.to_decimal(trade["price"])
-            if amount_decimal <= 0 or price_decimal <= 0:
-                raise ValueError("Amount and price must be positive")
-
-            timestamp_iso = datetime.fromtimestamp(
-                trade["timestamp"], tz=timezone.utc
-            ).isoformat()
-
-            params = (
-                trade["symbol"],
-                trade["side"],
-                str(amount_decimal),
-                str(price_decimal),
-                timestamp_iso,
-            )
-            await self.execute(query, params)
-            return True
-
-        except (InvalidOperation, KeyError, TypeError, ValueError) as e:
-            self.logger.error(f"Invalid trade data: {e}")
-            raise DatabaseError(f"Invalid trade data: {e}")
-        except Exception as e:
-            self.logger.error(f"Failed to store trade: {e}")
-            raise DatabaseError(f"Failed to store trade: {e}")
-
-    async def get_trades(self, symbol: str) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM trades WHERE symbol = ?"
-        try:
-            rows = await self.execute(query, (symbol,))
-            return [dict(row) for row in rows]
-        except DatabaseError as e:
-            self.logger.error(f"Failed to get trades for {symbol}: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Unexpected error when getting trades for {symbol}: {e}")
-            return []
-
-    async def get_connection(self):
-        """Asynchronously get a database connection"""
-        try:
-            return await aiosqlite.connect(self.db_path)
-        except Exception as e:
-            self.logger.error(f"Error getting connection: {e}")
-            raise e
 
     async def get_open_positions(self) -> List[Dict]:
         """Get all open positions"""
@@ -406,7 +472,7 @@ class DatabaseQueries:
     async def get_account_balance(self) -> Decimal:
         """Get current account balance from database"""
         try:
-            async with self.db_connection.get_connection() as conn:
+            async with self.get_connection() as conn:
                 query = "SELECT balance FROM account_balance ORDER BY timestamp DESC LIMIT 1"
                 result = await conn.execute(query)
                 row = await result.fetchone()
@@ -420,7 +486,7 @@ class DatabaseQueries:
     async def get_positions(self) -> List[Dict[str, Any]]:
         """Get all open positions from database"""
         try:
-            async with self.db_connection.get_connection() as conn:
+            async with self.get_connection() as conn:
                 query = "SELECT * FROM positions WHERE status = 'open'"
                 result = await conn.execute(query)
                 rows = await result.fetchall()
@@ -447,7 +513,7 @@ class DatabaseQueries:
                 position_data["timestamp"],
                 json.dumps(position_data.get("metadata", {})),
             ]
-            await self.execute(query, params)
+            await self.execute_with_retry(query, params)
             return True
         except Exception as e:
             self.logger.error(f"Failed to create position: {e}")
@@ -472,7 +538,7 @@ class DatabaseQueries:
         """
 
         try:
-            result = await self.execute(query, [symbol])
+            result = await self.execute_with_retry(query, [symbol])
             if not result:
                 return None
 

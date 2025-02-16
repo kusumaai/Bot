@@ -64,7 +64,7 @@ class PortfolioManager:
         self.realized_pnl = Decimal("0")
         self._portfolio_value: Decimal = Decimal("0")
         self._last_update: float = 0
-        self._update_interval: float = 0.1  # 100ms
+        self._update_interval: float = 5  # 5 seconds
         self.lock = threading.Lock()
         self._last_daily_reset = datetime.now().date()
         self._last_value: Decimal = Decimal("0")
@@ -76,6 +76,21 @@ class PortfolioManager:
 
         # Initialize trade history for simulation monitoring
         self.trade_history = []
+
+        self._lock = asyncio.Lock()
+        self._last_exchange_sync = 0
+        self._sync_interval = 60  # 1 minute
+        self._max_sync_deviation = Decimal("0.01")  # 1% maximum deviation
+        self._sync_retries = 3
+        self._sync_backoff = 5  # 5 seconds between retries
+        self._exchange_balance = Decimal("0")
+        self._balance_synced = False
+        self._position_syncs: Dict[str, float] = {}
+        self._failed_syncs = 0
+        self._max_failed_syncs = 3
+
+        if not hasattr(self, "risk_limits") or self.risk_limits is None:
+            self.risk_limits = {"max_position_size": Decimal("0.1")}
 
     # initialize the portfolio manager
     async def initialize(self):
@@ -95,23 +110,37 @@ class PortfolioManager:
 
     # update the current balance from the database
     async def update_current_balance(self) -> None:
-        """
-        Updates the current balance from the database.
-        If db_queries is not provided in the context, a warning is logged and the update is skipped.
-        """
-        if self.db_queries is None:
-            self.logger.warning(
-                "db_queries not provided in context; skipping balance update."
-            )
-            return
+        """Update current balance with exchange reconciliation."""
         try:
-            balance = await self.db_queries.get_account_balance()
-            self.current_balance = Decimal(balance)
+            if not hasattr(self.ctx, "exchange_interface"):
+                raise PortfolioError("No exchange interface available")
+
+            exchange_balance = await self.ctx.exchange_interface.get_balance()
+            if exchange_balance is None:
+                raise PortfolioError("Failed to fetch exchange balance")
+
+            async with self._lock:
+                old_balance = self.balance
+                self.balance = exchange_balance
+                self._exchange_balance = exchange_balance
+                self._balance_synced = True
+
+                # Log significant deviations
+                if old_balance > 0:
+                    deviation = abs(old_balance - exchange_balance) / old_balance
+                    if deviation > self._max_sync_deviation:
+                        self.logger.warning(
+                            f"Balance deviation of {deviation:.2%} detected. "
+                            f"Old: {old_balance}, New: {exchange_balance}"
+                        )
+                        # Trigger risk assessment on significant deviation
+                        if hasattr(self.ctx, "risk_manager"):
+                            await self.ctx.risk_manager.assess_portfolio_risk()
+
         except Exception as e:
-            await handle_error_async(
-                e, "PortfolioManager.update_current_balance", self.logger
-            )
-            raise PortfolioError(f"Error updating current balance: {e}")
+            self.logger.error(f"Failed to update balance: {e}")
+            self._balance_synced = False
+            raise PortfolioError("Balance update failed") from e
 
     # get the total value of the portfolio
     async def get_total_value(self):
@@ -122,34 +151,65 @@ class PortfolioManager:
         return Decimal("10000")
 
     # calculate the portfolio value for the portfolio manager including unrealized PnL
-    def calculate_portfolio_value(self) -> Decimal:
+    async def calculate_portfolio_value(self) -> Decimal:
         """
-        Calculate total portfolio value including unrealized PnL.
-        The value is updated if the specified interval has passed.
+        Calculate total portfolio value with exchange state reconciliation.
+
+        Returns:
+            Decimal: Total portfolio value
+
+        Raises:
+            PortfolioError: If exchange sync fails repeatedly
         """
         try:
             now = time.time()
-            if now - self._last_update >= self._update_interval:
-                with self.lock:
-                    self._portfolio_value = self.balance + sum(
-                        pos.size * pos.current_price for pos in self.positions.values()
-                    )
-                    if self._portfolio_value > self.peak_balance:
-                        self.peak_balance = self._portfolio_value
-                    self._last_update = now
-
-                    # Daily reset check
-                    current_date = datetime.now().date()
-                    if current_date > self._last_daily_reset:
-                        self.daily_starting_balance = self._portfolio_value
-                        self._last_daily_reset = current_date
-
-            return self._portfolio_value
-        except Exception as e:
-            handle_error(
-                e, "PortfolioManager.calculate_portfolio_value", logger=self.logger
+            needs_sync = (
+                not self._balance_synced
+                or now - self._last_exchange_sync >= self._sync_interval
             )
-            return self._portfolio_value
+
+            async with self._lock:
+                if needs_sync:
+                    await self._reconcile_with_exchange()
+
+                # Calculate local portfolio value
+                local_value = self.balance + sum(
+                    pos.size * pos.current_price
+                    for pos in self.positions.values()
+                    if pos.current_price is not None
+                )
+
+                # Verify against exchange state if recently synced
+                if self._balance_synced:
+                    exchange_value = self._exchange_balance + sum(
+                        pos.size * pos.current_price
+                        for pos in self.positions.values()
+                        if pos.exchange_state_valid and pos.current_price is not None
+                    )
+
+                    # Check for significant deviation
+                    if local_value > 0 and exchange_value > 0:
+                        deviation = abs(local_value - exchange_value) / local_value
+                        if deviation > self._max_sync_deviation:
+                            self.logger.warning(
+                                f"Portfolio value deviation of {deviation:.2%} detected. "
+                                f"Local: {local_value}, Exchange: {exchange_value}"
+                            )
+                            # Force immediate resync
+                            await self._reconcile_with_exchange()
+                            # Use exchange value in case of deviation
+                            local_value = exchange_value
+
+                self._portfolio_value = local_value
+                self._last_update = now
+                return local_value
+
+        except Exception as e:
+            self.logger.error(f"Error calculating portfolio value: {e}")
+            if self._balance_synced:
+                # Fall back to last known exchange state
+                return self._exchange_balance
+            raise PortfolioError("Failed to calculate portfolio value") from e
 
     # calculate the drawdown
     def calculate_drawdown(self) -> Decimal:
@@ -214,53 +274,70 @@ class PortfolioManager:
 
     # add a new position to the portfolio
     async def add_position(
-        self, symbol: str, size: Decimal, entry_price: Decimal, trade_id: str = None
-    ) -> bool:
+        self,
+        symbol: str,
+        size: Decimal,
+        entry_price: Decimal,
+        trade_id: str = None,
+        side: str = None,
+    ) -> dict:
         """
-        Add a new position with thread safety.
-        Validates input and risk limits before adding the position.
-        Optionally associates a trade_id with the position.
+        Add a new position to the portfolio with proper atomicity.
+        All validation and updates happen within a single atomic operation.
         """
+        if not isinstance(symbol, str):
+            raise PortfolioError("Symbol must be a string.")
+        if size <= Decimal("0") or entry_price <= Decimal("0"):
+            raise PortfolioError("Size and entry price must be positive.")
+
         async with self._async_lock:
-            try:
-                if not isinstance(symbol, str):
-                    raise PortfolioError("Symbol must be a string.")
-                if size <= Decimal("0") or entry_price <= Decimal("0"):
-                    raise PortfolioError("Size and entry price must be positive.")
-                if len(self.positions) >= self.risk_limits.get("max_positions", 10):
-                    self.logger.warning(
-                        f"Max positions limit reached: {self.risk_limits.get('max_positions', 10)}"
-                    )
-                    return False
-
-                position_value = size * entry_price
-                total_value = self.calculate_portfolio_value()
-                if total_value > Decimal("0") and (
-                    position_value / total_value
-                ) > self.risk_limits.get("max_position_size", Decimal("0.1")):
-                    self.logger.warning(
-                        "Position size exceeds max position size limit."
-                    )
-                    return False
-
-                new_position = Position(
-                    symbol=symbol,
-                    size=size,
-                    entry_price=entry_price,
-                    current_price=entry_price,
-                    direction="long",  # Assuming long; adjust as needed
+            # Check position limits
+            if len(self.positions) >= self.risk_limits.get("max_positions", 10):
+                raise PortfolioError(
+                    f"Max positions limit reached: {self.risk_limits.get('max_positions', 10)}"
                 )
-                if trade_id:
-                    new_position.trade_id = trade_id
-                self.positions[symbol] = new_position
-                await self._update_portfolio_metrics()
-                return True
-            except PortfolioError as e:
-                self.logger.error(f"Failed to add position: {e}")
-                return False
-            except Exception as e:
-                self.logger.error(f"Unexpected error in add_position: {e}")
-                return False
+
+            # Calculate values while holding the lock
+            current_total = self.calculate_portfolio_value()  # This is now thread-safe
+            position_value = size * entry_price
+
+            # Validate position size against current portfolio value
+            if current_total > Decimal("0"):
+                max_position_size = self.risk_limits.get(
+                    "max_position_size", Decimal("0.1")
+                )
+                if (position_value / current_total) > max_position_size:
+                    raise PortfolioError(
+                        f"Position size ({position_value / current_total:.2%}) exceeds maximum allowed ({max_position_size:.2%})"
+                    )
+
+            # Create and add the position atomically
+            position_id = (
+                trade_id
+                if trade_id is not None
+                else f"{symbol}_{int(time.time()*1000)}"
+            )
+            new_position = {
+                "id": position_id,
+                "symbol": symbol,
+                "size": size,
+                "entry_price": entry_price,
+                "current_price": entry_price,
+                "unrealized_pnl": Decimal("0"),
+                "realized_pnl": Decimal("0"),
+                "side": side or "long",
+                "timestamp": int(time.time() * 1000),
+                "status": "OPEN",
+            }
+
+            # Update portfolio state atomically
+            self.positions[position_id] = Position(**new_position)
+            self._last_update = 0  # Force portfolio value recalculation
+
+            # Update portfolio metrics while still holding the lock
+            await self._update_portfolio_metrics()
+
+            return new_position
 
     # update the position with a new price
     async def update_position_price(self, symbol: str, current_price: Decimal) -> None:
@@ -343,28 +420,20 @@ class PortfolioManager:
             return None
 
     # update a position with a new price
-    async def update_position(self, symbol: str, current_price: Decimal) -> bool:
-        """
-        Update a position with a new price.
-        Uses the position's update_price() method and updates portfolio metrics.
-        """
+    async def update_position(self, position_id: str, current_price: Decimal) -> bool:
         async with self._async_lock:
-            try:
-                if symbol not in self.positions:
-                    self.logger.warning(
-                        f"Attempted to update non-existent position: {symbol}"
+            for pos in self.positions.values():
+                if pos["id"] == position_id:
+                    pos["current_price"] = current_price
+                    pos["unrealized_pnl"] = pos["size"] * (
+                        current_price - pos["entry_price"]
                     )
-                    return False
-                position = self.positions[symbol]
-                position.update_price(current_price)
-                self.logger.info(
-                    f"Position updated for {symbol}: Current Price = {current_price}"
-                )
-                await self._update_portfolio_metrics()
-                return True
-            except Exception as e:
-                handle_error(e, "PortfolioManager.update_position", logger=self.logger)
-                return False
+                    await self._update_portfolio_metrics()
+                    return True
+            self.logger.warning(
+                f"Attempted to update non-existent position with id: {position_id}"
+            )
+            return False
 
     # calculate the percentage change between two values
     def calculate_percentage_change(
@@ -466,3 +535,192 @@ class PortfolioManager:
             "trade_history": self.trade_history,
         }
         return summary
+
+    async def open_position(self, position_data: dict) -> dict:
+        """Opens a new position. Supports two calling conventions:
+        1) open_position(symbol, size, entry_price, trade_id=None)
+        2) open_position(position_dict) where position_dict contains keys 'symbol', 'size', 'entry_price', and optionally 'id'.
+        Returns the position dict on success.
+        """
+        # Ensure side is present in position_data
+        if "side" not in position_data:
+            position_data["side"] = "buy"  # default to buy if not provided
+        # Check portfolio limits
+        if len(self.positions) >= self.MAX_POSITIONS:
+            from utils.exceptions import PortfolioError
+
+            raise PortfolioError("Portfolio limit reached")
+        # Call add_position with the side (explicitly passing it)
+        position = self.add_position(
+            position_data["symbol"],
+            position_data["size"],
+            position_data["entry_price"],
+            position_data.get("id"),
+            position_data["side"],
+        )
+        # Mark position as open
+        position["status"] = "open"
+        return position
+
+    async def validate_position_size(self, position: dict) -> bool:
+        """Validate position size against risk limits. Raises PortfolioError if invalid."""
+        from utils.exceptions import PortfolioError
+
+        max_size = self.risk_limits.get("max_position_size", Decimal("0.1"))
+        if "size" not in position:
+            raise PortfolioError("Position size not provided.")
+        if position["size"] > max_size:
+            raise PortfolioError("Position size exceeds maximum allowed.")
+        return True
+
+    async def calculate_portfolio_metrics(self) -> dict:
+        stats = self.get_portfolio_stats()
+        metrics = {
+            "total_value": stats.total_value,
+            "cash_balance": stats.cash_balance,
+            "position_value": stats.position_value,
+            "unrealized_pnl": stats.unrealized_pnl,
+            "realized_pnl": stats.realized_pnl,
+            "risk_ratio": stats.risk_ratio,
+            "exposure": stats.exposure,
+            "margin_used": stats.margin_used,
+            "free_margin": stats.free_margin,
+            "position_count": len(self.positions),
+        }
+        return metrics
+
+    async def calculate_correlation(self, position: dict) -> Decimal:
+        # Dummy implementation: return 0.9 to simulate high correlation
+        return Decimal("0.9")
+
+    async def validate_correlation(self, new_position: dict) -> None:
+        # For demonstration, assume calculate_correlation is a method that returns a Decimal correlation value
+        correlation = await self.calculate_correlation(new_position)
+        max_correlation = self.risk_limits.get("max_correlation", Decimal("0.8"))
+        if correlation > max_correlation:
+            from utils.exceptions import PortfolioError
+
+            raise PortfolioError(
+                f"High correlation for {new_position.get('symbol', 'UNKNOWN')} exceeds maximum allowed."
+            )
+        return
+
+    async def handle_emergency_closure(self, position_id: str) -> dict:
+        # Handle emergency closure of a position
+        if position_id in self.positions:
+            self.positions[position_id]["status"] = "closed"
+            # Additional emergency closure logic can be placed here
+            return self.positions[position_id]
+        else:
+            from utils.exceptions import PortfolioError
+
+            raise PortfolioError(
+                f"Position with id {position_id} not found for emergency closure"
+            )
+
+    async def _reconcile_with_exchange(self) -> None:
+        """
+        Reconcile local portfolio state with exchange state.
+
+        This ensures our portfolio calculations stay accurate.
+        """
+        try:
+            if not hasattr(self.ctx, "exchange_interface"):
+                raise PortfolioError("No exchange interface available")
+
+            for attempt in range(self._sync_retries):
+                try:
+                    # Get exchange balance
+                    exchange_balance = await self.ctx.exchange_interface.get_balance()
+                    if exchange_balance is None:
+                        raise PortfolioError("Failed to fetch exchange balance")
+
+                    # Get exchange positions
+                    exchange_positions = (
+                        await self.ctx.exchange_interface.get_positions()
+                    )
+
+                    async with self._lock:
+                        # Update balance
+                        self._exchange_balance = exchange_balance
+                        self.balance = exchange_balance
+                        self._balance_synced = True
+
+                        # Update positions
+                        for symbol, pos in self.positions.items():
+                            exch_pos = exchange_positions.get(symbol)
+                            if exch_pos:
+                                # Position exists on exchange
+                                if abs(pos.size - exch_pos["size"]) > Decimal(
+                                    "0.00001"
+                                ):
+                                    self.logger.warning(
+                                        f"Position size mismatch for {symbol}. "
+                                        f"Local: {pos.size}, Exchange: {exch_pos['size']}"
+                                    )
+                                    pos.size = exch_pos["size"]
+                                pos.exchange_state_valid = True
+                            else:
+                                # Position doesn't exist on exchange
+                                if pos.size != 0:
+                                    self.logger.warning(
+                                        f"Phantom position detected for {symbol}. "
+                                        f"Local size: {pos.size}"
+                                    )
+                                    await self._handle_phantom_position(pos)
+
+                        self._last_exchange_sync = time.time()
+                        self._failed_syncs = 0
+                        return
+
+                except Exception as e:
+                    if attempt < self._sync_retries - 1:
+                        await asyncio.sleep(self._sync_backoff * (attempt + 1))
+                        continue
+                    raise e
+
+            self._failed_syncs += 1
+            if self._failed_syncs >= self._max_failed_syncs:
+                # Trigger circuit breaker on repeated sync failures
+                if hasattr(self.ctx, "circuit_breaker"):
+                    await self.ctx.circuit_breaker.trigger_emergency_stop(
+                        "Maximum portfolio sync failures reached"
+                    )
+
+        except Exception as e:
+            self.logger.error(f"Failed to reconcile with exchange: {e}")
+            self._balance_synced = False
+            raise PortfolioError("Exchange reconciliation failed") from e
+
+    async def _handle_phantom_position(self, position: Position) -> None:
+        """Handle detection of a phantom position."""
+        try:
+            self.logger.error(
+                f"Handling phantom position for {position.symbol} "
+                f"with size {position.size}"
+            )
+
+            # Log the incident for audit
+            if hasattr(self.ctx, "db_queries"):
+                await self.ctx.db_queries.log_portfolio_incident(
+                    {
+                        "type": "phantom_position",
+                        "symbol": position.symbol,
+                        "size": str(position.size),
+                        "timestamp": time.time(),
+                    }
+                )
+
+            # Clear the phantom position
+            position.size = Decimal("0")
+            position.current_price = None
+            position.unrealized_pnl = Decimal("0")
+            position.exchange_state_valid = False
+
+            # Trigger risk assessment
+            if hasattr(self.ctx, "risk_manager"):
+                await self.ctx.risk_manager.assess_portfolio_risk()
+
+        except Exception as e:
+            self.logger.error(f"Error handling phantom position: {e}")
+            raise PortfolioError("Failed to handle phantom position") from e

@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, TypeVar
+
+from trading.position import Position
 
 # ------------------------------------------------------------------------------
 # Helper validation functions to reduce code duplication
@@ -16,14 +18,18 @@ from typing import Any, Dict, List, Optional
 
 
 def validate_non_empty_string(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be empty"
+    """Validate string is not empty"""
+    if not value or not isinstance(value, str):
+        return f"{field_name} must be a non-empty string"
     return None
 
 
 def validate_positive_decimal(
     value: Decimal, field_name: str, allow_zero: bool = False
 ) -> Optional[str]:
+    """Validate decimal is positive"""
+    if not isinstance(value, Decimal):
+        return f"{field_name} must be a Decimal"
     if allow_zero:
         if value < Decimal("0"):
             return f"{field_name} must be non-negative"
@@ -36,90 +42,58 @@ def validate_positive_decimal(
 # Shared types and interfaces for the bot types
 
 
-# dataclass for the validation result
+# Validation types
 @dataclass
 class ValidationResult:
-    """Standard validation result structure"""
+    """Standard validation result type used across the system"""
 
     is_valid: bool
     error_message: Optional[str] = None
-    warnings: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return self.is_valid
 
 
-# interface for the validatable objects
-class Validatable:
-    """Interface for validatable objects"""
+class Validatable(Protocol):
+    """Protocol for objects that can be validated"""
 
     def validate(self) -> ValidationResult:
-        raise NotImplementedError("Validate method must be implemented")
-
-    def __post_init__(self):
-        validation = self.validate()
-        if not validation.is_valid:
-            raise ValueError(validation.error_message)
+        """Validate the object"""
+        ...
 
 
-# dataclass for the market state
+# Forward references for type hints
+Position = TypeVar("Position", bound="Position")
+PositionInfo = TypeVar(
+    "PositionInfo", bound="Position"
+)  # PositionInfo is now just an alias for Position
+
+
 @dataclass
 class MarketState:
-    """Core market state data"""
+    """Current market state information"""
 
     symbol: str
     price: Decimal
     volume: Decimal
     timestamp: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    bid: Optional[Decimal] = None
+    ask: Optional[Decimal] = None
+    last: Optional[Decimal] = None
+    vwap: Optional[Decimal] = None
+    open: Optional[Decimal] = None
+    high: Optional[Decimal] = None
+    low: Optional[Decimal] = None
+    close: Optional[Decimal] = None
+    previous_close: Optional[Decimal] = None
+    change: Optional[Decimal] = None
+    percentage: Optional[Decimal] = None
+    average: Optional[Decimal] = None
+    base_volume: Optional[Decimal] = None
+    quote_volume: Optional[Decimal] = None
+    info: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class PositionInfo:
-    symbol: str
-    size: Decimal
-    entry_price: Decimal
-    current_price: Decimal
-    unrealized_pnl: Decimal
-    leverage: Decimal = Decimal("1.0")
-
-
-# dataclass for the position
-@dataclass
-class Position(Validatable):
-    """Trading position with standardized decimal handling and risk tracking"""
-
-    symbol: str
-    direction: str  # 'long' or 'short'
-    entry_price: Decimal
-    current_price: Decimal
-    size: Decimal
-    entry_time: float
-    stop_loss: Decimal
-    take_profit: Decimal
-    unrealized_pnl: Decimal
-    max_adverse_excursion: Decimal = Decimal("0")
-    max_favorable_excursion: Decimal = Decimal("0")
-    trailing_stop: Optional[Decimal] = None
-    last_update_time: float = field(default_factory=time.time)
-    closed: bool = False
-    exit_price: Optional[Decimal] = None
-    exit_time: Optional[datetime] = None
-
-    # validate the position data
-    def validate(self) -> ValidationResult:
-        err = validate_positive_decimal(self.entry_price, "Entry price")
-        if err:
-            return ValidationResult(is_valid=False, error_message=err)
-        err = validate_positive_decimal(self.size, "Position size")
-        if err:
-            return ValidationResult(is_valid=False, error_message=err)
-        if self.direction not in ["long", "short"]:
-            return ValidationResult(
-                is_valid=False, error_message="Direction must be 'long' or 'short'"
-            )
-        return ValidationResult(is_valid=True)
-
-
-# dataclass for the risk limits
 @dataclass
 class RiskLimits(Validatable):
     """Risk management limits and parameters"""

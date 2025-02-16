@@ -13,6 +13,13 @@ class TradingError(Exception):
     pass
 
 
+# concurrancy error class
+class ConcurrentModificationError(Exception):
+    """Concurrent Modification exceptions"""
+
+    pass
+
+
 # order error class
 class OrderError(TradingError):
     """Raised when there's an error with an order execution"""
