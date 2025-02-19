@@ -1,6 +1,4 @@
-# KillaBot 0.9
-
-A robust automated trading system with advanced safety features, risk management, and data validation.
+automated trading system safety features, risk management, and data validation.
 
 ## Architecture
 
