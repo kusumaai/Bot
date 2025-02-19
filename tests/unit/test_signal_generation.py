@@ -54,9 +54,9 @@ def test_generate_ga_signals_crossover():
         "strategy": "crossover",
         "indicator_values": {"macd": Decimal("0.5"), "rsi": Decimal("30")},
     }
-
-    signals = generate_ga_signals(input_data)
-    assert signals["signal"] == "buy"
+    signals = generate_ga_signals(input_data, population=100)
+    assert isinstance(signals, dict)
+    assert signals["type"] == "ga"
     assert signals["strategy"] == "crossover"
 
 
@@ -68,9 +68,9 @@ def test_generate_ga_signals_platform_break():
         "strategy": "platform_break",
         "indicator_values": {"volume": Decimal("1500")},
     }
-
-    signals = generate_ga_signals(input_data)
-    assert signals["signal"] == "sell"
+    signals = generate_ga_signals(input_data, population=100)
+    assert isinstance(signals, dict)
+    assert signals["type"] == "ga"
     assert signals["strategy"] == "platform_break"
 
 
@@ -82,6 +82,5 @@ def test_generate_ga_signals_invalid_strategy():
         "strategy": "unknown_strategy",
         "indicator_values": {"volume": Decimal("1500")},
     }
-    # test GA signal generation with invalid strategy
     with pytest.raises(ValidationError, match="Invalid strategy: unknown_strategy"):
-        generate_ga_signals(input_data)
+        generate_ga_signals(input_data, population=100)

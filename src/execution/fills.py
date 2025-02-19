@@ -1,5 +1,5 @@
 #! /usr/bin/env python3
-#src/execution/fills.py
+# src/execution/fills.py
 """
 Module: src.execution
 Provides fill information management.
@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict
 
 
+# this is a data class that will store the fill information
 @dataclass
 class FillInfo:
     # Required fields (no defaults)
@@ -18,11 +19,11 @@ class FillInfo:
     price: Decimal
     timestamp: float
     order_id: str
-    
+
     # Optional fields (with defaults)
-    fees: Decimal = Decimal('0')
-    liquidity: str = 'taker'
-    metadata: Dict[str, Any] = field(default_factory=dict) 
-    
-    # ... rest of the class needs implementation ... 
-    #TODO: Implement the class
+    fees: Decimal = Decimal("0")
+    liquidity: str = "taker"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # ... rest of the class needs implementation ...
+    # TODO: Implement the class

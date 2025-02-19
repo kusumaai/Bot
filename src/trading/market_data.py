@@ -1,17 +1,20 @@
 #! /usr/bin/env python3
-#src/trading/market_data.py
+# src/trading/market_data.py
 """
 Module: src.trading
 Provides market data functionality.
 """
-from typing import Any, List, Dict
 import asyncio
 import logging
+from typing import Any, Dict, List
 
+from risk.validation import MarketDataValidation
+from trading.exceptions import InvalidMarketDataError, MarketDataError
 from utils.error_handler import handle_error_async
 from utils.exceptions import MarketDataValidationError
-from risk.validation import MarketDataValidation
-#market data class that fetches and validates market data
+
+
+# market data class that fetches and validates market data
 class MarketData:
     def __init__(self, ctx: Any):
         self.ctx = ctx
@@ -23,12 +26,16 @@ class MarketData:
         try:
             if self.initialized:
                 return True
-                
-            if not self.ctx.risk_manager or not hasattr(self.ctx.risk_manager, 'risk_limits'):
+
+            if not self.ctx.risk_manager or not hasattr(
+                self.ctx.risk_manager, "risk_limits"
+            ):
                 self.logger.error("Risk manager must be initialized first")
                 return False
-                
-            self.validation = MarketDataValidation(self.ctx.risk_manager.risk_limits, self.logger)
+
+            self.validation = MarketDataValidation(
+                self.ctx.risk_manager.risk_limits, self.logger
+            )
             self.initialized = True
             return True
         except Exception as e:
@@ -51,5 +58,49 @@ class MarketData:
             return []
 
     async def fetch_market_data(self) -> Any:
-        # Implementation to fetch market data
-        return {} 
+        try:
+            if not self.initialized:
+                raise MarketDataError("Market data not initialized")
+
+            if not self.ctx.exchange_interface:
+                raise MarketDataError("Exchange interface not available")
+
+            # Fetch market data from exchange
+            market_data = await self.ctx.exchange_interface.fetch_market_data()
+
+            # Basic validation before returning
+            if not market_data or not isinstance(market_data, dict):
+                raise InvalidMarketDataError("Invalid market data format received")
+
+            return market_data
+
+        except Exception as e:
+            await handle_error_async(e, "MarketData.fetch_market_data", self.logger)
+            return {}
+        return {}
+
+    async def validate_market_data(self, data: Any) -> bool:
+        try:
+            if not self.initialized:
+                raise MarketDataError("Market data not initialized")
+
+            if not self.validation:
+                raise MarketDataError("Validation not initialized")
+
+            return self.validation.validate_market_data(data)
+        except Exception as e:
+            await handle_error_async(e, "MarketData.validate_market_data", self.logger)
+            return False
+
+    async def transform_market_data(self, data: Any) -> Any:
+        try:
+            if not self.initialized:
+                raise MarketDataError("Market data not initialized")
+
+            if not self.ctx.transformer:
+                raise MarketDataError("Transformer not initialized")
+
+            return self.ctx.transformer.transform_market_data(data)
+        except Exception as e:
+            await handle_error_async(e, "MarketData.transform_market_data", self.logger)
+            return data

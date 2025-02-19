@@ -18,6 +18,7 @@ import aiohttp
 import numpy as np
 import psutil
 
+from src.utils.exceptions import HealthCheckError
 from utils.error_handler import handle_error, handle_error_async
 from utils.numeric_handler import NumericHandler
 
@@ -113,6 +114,11 @@ class HealthMonitor:
             "risk_manager": 0.9,
             "circuit_breaker": 1.0,
         }
+
+        self.CRITICAL_CPU_THRESHOLD = 90.0
+        self.CRITICAL_MEMORY_THRESHOLD = 90.0
+        self.MAX_CONSECUTIVE_FAILURES = 3
+        self.consecutive_failures = 0
 
     def _init_status_and_components(self):
         # Initialize status
@@ -851,20 +857,20 @@ class HealthMonitor:
         return healthy
 
     async def check_market_data_freshness(self) -> bool:
-        import time
-        from datetime import datetime
+        try:
+            last_update = await self.ctx.market_data.get_last_update()
+            if not last_update:
+                raise HealthCheckError("No market data updates found")
 
-        current = time.time()
-        market_list = self.ctx.config.get("market_list", [])
-        for symbol in market_list:
-            last_update = await self.ctx.market_data.get_last_update(symbol)
-            if hasattr(last_update, "timestamp"):
-                last_update = last_update.timestamp()
-            if current - last_update > self.MARKET_DATA_MAX_AGE:
-                from utils.error_handler import HealthCheckError
+            staleness = datetime.now() - last_update
+            if staleness > timedelta(minutes=5):
+                raise HealthCheckError(f"Market data is stale: {staleness}")
 
-                raise HealthCheckError(f"Market data for {symbol} is stale.")
-        return True
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Market data freshness check failed: {e}")
+            raise HealthCheckError(f"Market data check failed: {e}")
 
     async def validate_system_metrics(self, metrics: dict) -> None:
         from utils.error_handler import HealthCheckError
@@ -925,3 +931,96 @@ class HealthMonitor:
         except Exception as e:
             self.logger.error(f"Error checking component {component}: {e}")
             return False, 0.0, str(e)
+
+    async def check_database(self) -> Tuple[bool, str, Optional[Exception]]:
+        """
+        Check database health.
+
+        Returns:
+            Tuple of (is_healthy, status_message, exception if any)
+        """
+        try:
+            if not hasattr(self, "ctx") or not self.ctx.db_connection:
+                return False, "Database connection not initialized", None
+
+            await self.ctx.db_connection.execute("SELECT 1")
+            return True, "Database connection healthy", None
+
+        except Exception as e:
+            self.logger.error(f"Database health check failed: {e}")
+            return False, f"Database error: {str(e)}", e
+
+    async def get_system_metrics(self) -> Dict[str, float]:
+        """
+        Get current system metrics.
+
+        Returns:
+            Dict with cpu_usage and memory_usage
+        """
+        try:
+            cpu_usage = psutil.cpu_percent() / 100.0
+            memory = psutil.virtual_memory()
+            memory_usage = memory.percent / 100.0
+
+            return {"cpu_usage": cpu_usage, "memory_usage": memory_usage}
+
+        except Exception as e:
+            self.logger.error(f"Failed to get system metrics: {e}")
+            return {"cpu_usage": 0.0, "memory_usage": 0.0}
+
+    async def check_system_health(self) -> Dict[str, Any]:
+        """
+        Check overall system health.
+
+        Returns:
+            Dict with health status and details
+        """
+        try:
+            metrics = await self.get_system_metrics()
+            db_healthy = await self.check_database_health()
+            market_data_healthy = await self.check_market_data_freshness()
+
+            is_healthy = (
+                db_healthy
+                and market_data_healthy
+                and metrics["cpu_usage"] < self.CRITICAL_CPU_THRESHOLD / 100.0
+                and metrics["memory_usage"] < self.CRITICAL_MEMORY_THRESHOLD / 100.0
+            )
+
+            if not is_healthy:
+                self.consecutive_failures += 1
+            else:
+                self.consecutive_failures = 0
+
+            return {
+                "healthy": is_healthy,
+                "database": db_healthy,
+                "market_data": market_data_healthy,
+                "metrics": metrics,
+                "consecutive_failures": self.consecutive_failures,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            return {"healthy": False, "error": str(e)}
+
+    async def check_system_readiness(self) -> bool:
+        """
+        Check if system is ready for operation.
+
+        Returns:
+            bool: True if system is ready
+        """
+        health_status = await self.check_system_health()
+        return health_status.get("healthy", False)
+
+    async def monitor_system_health(self):
+        """Monitor system health continuously."""
+        async with self._component_lock:
+            health_status = await self.check_system_health()
+            if not health_status["healthy"]:
+                if (
+                    health_status["consecutive_failures"]
+                    >= self.MAX_CONSECUTIVE_FAILURES
+                ):
+                    await self.trigger_emergency_shutdown()

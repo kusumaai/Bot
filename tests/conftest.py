@@ -25,12 +25,12 @@ if project_root not in sys.path:
 from exchanges.exchange_manager import ExchangeManager
 from execution.exchange_interface import ExchangeInterface
 from execution.market_data import MarketData
+from execution.portfolio_manager import PortfolioManager
 from risk.limits import RiskLimits
 from risk.manager import RiskManager
 from trading.circuit_breaker import CircuitBreaker
-from trading.portfolio import PortfolioManager
 from trading.ratchet import RatchetManager
-from utils.error_handler import DatabaseError, ExchangeError, RiskError
+from utils.exceptions import DatabaseError, ExchangeError, RiskError
 from utils.health_monitor import HealthMonitor
 from utils.logger import setup_logging
 from utils.numeric_handler import NumericHandler

@@ -10,7 +10,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Protocol, TypeVar
 
-from trading.position import Position
+# Remove Position import
+# from trading.position import Position
 
 # ------------------------------------------------------------------------------
 # Helper validation functions to reduce code duplication

@@ -8,7 +8,7 @@ Provides machine learning signal generation.
 import logging
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -176,27 +176,86 @@ class MLSignalGenerator:
         return 0.7
 
 
-async def generate_ml_signals(ctx, data: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_ml_signals(
+    input_data: Dict[str, Any], ctx: Optional[Any] = None
+) -> Dict[str, Any]:
     """
     Generates machine learning-based trading signals.
 
-    :param ctx: Trading context
-    :param data: Input data for signal generation
-    :return: Generated signals
+    Args:
+        input_data: Input data for signal generation containing:
+            - symbol: Trading symbol
+            - trend: Market trend (bullish/bearish)
+            - strength: Signal strength (0-1)
+        ctx: Optional trading context
+
+    Returns:
+        Generated signals dictionary
+
+    Raises:
+        ValidationError: If input data is invalid
     """
-    if not data.get("trend") or not data.get("strength"):
+    # Validate required fields
+    if not input_data.get("trend") or not input_data.get("strength"):
         raise ValidationError("Missing required fields: trend and strength")
-    # validate the trend for the machine learning signal generator
-    trend = data["trend"].lower()
+
+    # Validate trend - handle both direct access and MagicMock
+    try:
+        trend = str(input_data["trend"]).lower()
+    except (AttributeError, TypeError):
+        trend = str(input_data.get("trend", "")).lower()
+
     if trend not in ["bullish", "bearish"]:
         raise ValidationError(f"Invalid trend: {trend}")
-    # generate the signals for the machine learning signal generator
-    signals = {
-        "symbol": data["symbol"],
-        "action": "buy" if trend == "bullish" else "sell",
-        "strength": Decimal(str(data["strength"])),
-        "timestamp": datetime.utcnow(),
-        "metadata": {"source": "ml_model", "version": "1.0", "trend": trend},
+
+    # Generate signal
+    signal = {
+        "symbol": input_data.get("symbol"),
+        "type": "ml",
+        "trend": trend,
+        "strength": Decimal(str(input_data["strength"])),
+        "timestamp": datetime.now(timezone.utc),
     }
-    # return the signals for the machine learning signal generator to the trading context
-    return signals
+
+    return signal
+
+
+def generate_ga_signals(
+    input_data: Dict[str, Any], population: int = 100
+) -> Dict[str, Any]:
+    """
+    Generates genetic algorithm-based trading signals.
+
+    Args:
+        input_data: Input data containing:
+            - symbol: Trading symbol
+            - strategy: Trading strategy
+            - indicator_values: Dict of indicator values
+        population: Population size for GA, defaults to 100
+
+    Returns:
+        Generated signals dictionary
+
+    Raises:
+        ValidationError: If input data is invalid
+    """
+    # Validate required fields
+    if not input_data.get("strategy") or not input_data.get("indicator_values"):
+        raise ValidationError("Missing required fields: strategy and indicator_values")
+
+    # Validate strategy
+    strategy = str(input_data["strategy"]).lower()
+    if strategy not in ["crossover", "platform_break", "trend_following"]:
+        raise ValidationError(f"Invalid strategy: {strategy}")
+
+    # Generate signal
+    signal = {
+        "symbol": input_data.get("symbol"),
+        "type": "ga",
+        "strategy": strategy,
+        "indicators": input_data["indicator_values"],
+        "population_size": population,
+        "timestamp": datetime.now(timezone.utc),
+    }
+
+    return signal

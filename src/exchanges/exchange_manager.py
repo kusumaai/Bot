@@ -27,6 +27,32 @@ from src.utils.numeric_handler import NumericHandler
 
 
 @dataclass
+class RateLimitConfig:
+    """Configuration for rate limiting."""
+
+    max_requests_per_second: int
+    max_requests_per_minute: int
+    max_requests_per_hour: int
+    max_requests_per_day: int
+    backoff_factor: float = 1.5
+    max_backoff: int = 300  # 5 minutes
+    min_remaining_threshold: float = 0.1  # 10% remaining capacity threshold
+
+    @classmethod
+    def from_dict(cls, config: Dict[str, Any]) -> "RateLimitConfig":
+        """Create config from dictionary."""
+        return cls(
+            max_requests_per_second=int(config.get("max_requests_per_second", 10)),
+            max_requests_per_minute=int(config.get("max_requests_per_minute", 600)),
+            max_requests_per_hour=int(config.get("max_requests_per_hour", 36000)),
+            max_requests_per_day=int(config.get("max_requests_per_day", 864000)),
+            backoff_factor=float(config.get("backoff_factor", 1.5)),
+            max_backoff=int(config.get("max_backoff", 300)),
+            min_remaining_threshold=float(config.get("min_remaining_threshold", 0.1)),
+        )
+
+
+@dataclass
 class RateLimit:
     """Rate limit configuration with enhanced tracking"""
 

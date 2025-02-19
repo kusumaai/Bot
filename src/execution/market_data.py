@@ -42,13 +42,18 @@ class DummyExchange:
 
 
 class MarketData:
-    def __init__(self, ctx: Any):
+    def __init__(self, ctx: Any, exchange, numeric_handler):
         self.ctx = ctx
-        self.logger = ctx.logger or logging.getLogger(__name__)
+        self.exchange = exchange
+        self.nh = numeric_handler
+        self.logger = logging.getLogger(__name__)
+        self._data_cache = {}
+        self._last_update = {}
+        self._cache_timeout = timedelta(minutes=5)
+        self._component_lock = asyncio.Lock()
         self.initialized = False
         self.exchange_interface = None  # Will be set in initialize()
         self.validator = None  # Will be set in initialize()
-        self.nh = NumericHandler()
         self._last_emergency_check = time.time()
         self.EMERGENCY_CHECK_INTERVAL = 60  # Check every minute
 
@@ -64,7 +69,6 @@ class MarketData:
         )
         self.min_sizes = {}
 
-        self.exchange = DummyExchange()
         self.data_cache = {}
         self._lock = asyncio.Lock()
 
@@ -531,16 +535,29 @@ class MarketData:
         # Dummy volatility calculation, e.g., fixed value
         return Decimal("0.05")
 
-    async def is_data_fresh(self) -> bool:
-        # For simplicity, consider data fresh if the last update for a default symbol is less than 5 minutes old
-        symbol = "BTC/USDT"
-        last_update = self.last_update.get(symbol, datetime.now())
-        age = (datetime.now() - last_update).total_seconds()
-        return age < 300
+    async def is_data_fresh(self, symbol: str = "BTC/USDT") -> bool:
+        """Check if market data is fresh."""
+        if symbol not in self._last_update:
+            return False
 
-    async def get_from_cache(self, symbol: str):
-        # Dummy cache implementation returns None
-        return None
+        return datetime.now() - self._last_update[symbol] < self._cache_timeout
+
+    async def get_from_cache(self, symbol: str) -> Optional[Dict]:
+        """Get market data from cache if not expired."""
+        if symbol not in self._data_cache:
+            return None
+
+        cached_data = self._data_cache[symbol]
+        if datetime.now() - cached_data["timestamp"] > self._cache_timeout:
+            del self._data_cache[symbol]
+            return None
+
+        return cached_data
+
+    async def store_in_cache(self, symbol: str, data: Dict):
+        """Store market data in cache."""
+        self._data_cache[symbol] = data
+        self._last_update[symbol] = data["timestamp"]
 
     async def get_current_price(self, symbol: str) -> Decimal:
         """Fetch current price for the given symbol using exchange ticker."""
@@ -570,16 +587,15 @@ class MarketData:
         except Exception:
             return False
 
-    async def store_in_cache(self, symbol: str, data: dict) -> None:
-        """Store the provided data in the cache associated with the symbol."""
-        self.data_cache[symbol] = data
-        from datetime import datetime
-
-        self.last_update[symbol] = datetime.now()
-
-    async def get_from_cache(self, symbol: str):
-        """Retrieve cached data for the given symbol, or None if not present."""
-        return self.data_cache.get(symbol, None)
+    async def analyze_volume(self, candles: List[List]) -> Dict[str, Decimal]:
+        """Analyze volume data from candles."""
+        try:
+            total_volume = sum(Decimal(str(candle[5])) for candle in candles)
+            avg_volume = total_volume / len(candles)
+            return {"total_volume": total_volume, "avg_volume": avg_volume}
+        except Exception as e:
+            self.logger.error(f"Failed to analyze volume: {e}")
+            raise MarketDataError(f"Volume analysis failed: {str(e)}")
 
 
 if __name__ == "__main__":

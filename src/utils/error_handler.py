@@ -24,13 +24,16 @@ from src.utils.exceptions import (
     DatabaseError,
     ExchangeAPIError,
     ExchangeError,
+    ExecutionError,
     InvalidOrderError,
     MarketDataValidationError,
     MathError,
+    OrderError,
     PortfolioError,
     PositionError,
     RatchetError,
     RateLimitExceeded,
+    RiskError,
     TradingBotError,
 )
 

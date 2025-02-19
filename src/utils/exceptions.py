@@ -2,7 +2,7 @@
 # src/utils/exceptions.py
 """
 Module: src.utils
-Provides exception handling functionality.
+Provides custom exceptions.
 """
 
 
@@ -141,7 +141,7 @@ class BackTestError(Exception):
     pass
 
 
-class ValidationError(Exception):
+class ValidationError(TradingError):
     """Exception raised for validation-related errors."""
 
     pass
@@ -149,6 +149,18 @@ class ValidationError(Exception):
 
 class RiskManagerError(TradingError):
     """Exception raised for risk manager-related errors."""
+
+    pass
+
+
+class ExecutionError(TradingError):
+    """Exception raised when execution fails."""
+
+    pass
+
+
+class HealthCheckError(TradingError):
+    """Exception raised for health check failures."""
 
     pass
 

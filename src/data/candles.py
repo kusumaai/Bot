@@ -1,15 +1,17 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 # src/data/candles.py
 """
-Tool: data/candles.py
-Database management for OHLCV candle data with proper error handling
+Module: src.data
+Provides candle data processing functionality.
 """
+
 import asyncio
 import logging
 import os
 import sqlite3
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
@@ -18,14 +20,15 @@ import ccxt.async_support as ccxt
 import numpy as np
 import pandas as pd
 
+from bot_types.base_types import ValidationResult
 from database.database import DatabaseConnection
 from database.queries import DatabaseQueries
 from utils.error_handler import ValidationError, handle_error
-from utils.logger import setup_logging
+from utils.logger import get_logger
 from utils.numeric_handler import NumericHandler
 
 # Initialize logger at module level
-logger = setup_logging(name="CandleManager", log_level="INFO")
+logger = get_logger(__name__)
 
 
 def get_stable_coin_markets(

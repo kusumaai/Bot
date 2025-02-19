@@ -14,14 +14,9 @@ from typing import Any, Dict, Optional, Set
 
 import pandas as pd
 
-from bot_types.base_types import (
-    MarketState,
-    PositionInfo,
-    Validatable,
-    ValidationResult,
-)
+from bot_types.base_types import MarketState, Validatable, ValidationResult
+from bot_types.position_types import PositionInfo, PositionValidationConfig
 from signals.market_state import prepare_market_state
-from trading.position_validator import PositionValidationConfig, PositionValidator
 from utils.error_handler import handle_error_async
 from utils.exceptions import PositionError
 from utils.logger import get_logger

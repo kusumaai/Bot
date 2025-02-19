@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from trading.portfolio import PortfolioManager
+from execution.portfolio_manager import PortfolioManager
 from utils.error_handler import handle_error, handle_error_async
 from utils.exceptions import (
     MathError,
@@ -69,7 +69,7 @@ class RiskManager:
         self._lock = asyncio.Lock()
         self.initialized = False
         self.nh = NumericHandler(self.logger)
-        from trading.portfolio import PortfolioManager
+        from execution.portfolio_manager import PortfolioManager
 
         if hasattr(ctx, "portfolio_manager") and ctx.portfolio_manager is not None:
             self.portfolio = ctx.portfolio_manager

@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 # src/startup/system_init.py
 """
 Module: src.startup
@@ -7,20 +7,27 @@ Provides system initialization and component setup with enhanced resource manage
 import asyncio
 import gc
 import logging
+import os
 import shutil
+import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # import required modules
 from config.risk_config import RiskConfig
 from database.database import DatabaseConnection
+from database.queries import DatabaseQueries
+from exchanges.exchange_manager import ExchangeManager
 from execution.exchange_interface import ExchangeInterface
 from execution.market_data import MarketData
+from execution.portfolio_manager import PortfolioManager
 from monitoring.metrics import MetricsCollector
 from risk.manager import RiskManager
 from trading.circuit_breaker import CircuitBreaker
-from trading.portfolio import PortfolioManager
+from trading.ratchet import RatchetManager
 from utils.error_handler import InitializationError, init_error_handler
+from utils.health_monitor import HealthMonitor
 from utils.logger import StructuredLogger, setup_logging
 
 
